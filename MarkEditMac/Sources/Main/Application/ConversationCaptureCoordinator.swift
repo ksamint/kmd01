@@ -4,6 +4,7 @@ import ServiceManagement
 enum ConversationCaptureServiceState: Equatable {
   case disabled
   case enabled
+  case registered
   case approvalRequired
   case notRegistered
   case unavailable
@@ -14,6 +15,8 @@ enum ConversationCaptureServiceState: Equatable {
       String(localized: "Clipboard capture is off")
     case .enabled:
       String(localized: "Clipboard capture is running in the background")
+    case .registered:
+      String(localized: "Clipboard capture is registered and will start at the next login")
     case .approvalRequired:
       String(localized: "Approval is required in System Settings › Login Items")
     case .notRegistered:
@@ -27,6 +30,8 @@ enum ConversationCaptureServiceState: Equatable {
     switch self {
     case .enabled:
       "checkmark.circle.fill"
+    case .registered:
+      "clock.badge.checkmark"
     case .approvalRequired:
       "exclamationmark.triangle.fill"
     case .disabled:
@@ -42,7 +47,7 @@ enum ConversationCaptureServiceState: Equatable {
       .systemGreen
     case .approvalRequired:
       .systemOrange
-    case .disabled, .notRegistered, .unavailable:
+    case .disabled, .registered, .notRegistered, .unavailable:
       .secondaryLabelColor
     }
   }
@@ -285,22 +290,28 @@ final class ConversationCaptureCoordinator: NSObject {
 extension ConversationCaptureCoordinator {
   var serviceState: ConversationCaptureServiceState {
     guard AppPreferences.General.conversationCaptureEnabled else { return .disabled }
+    // Distinguish a running helper from a login item that is only registered
+    // for the next login session.
+    if isCaptureHelperRunning { return .enabled }
     // Developer ID/App Store builds use SMAppService. Local ad-hoc `.dev`
     // builds cannot register a login item, but can safely run the embedded
     // helper for the lifetime of the development session.
     if isDevelopmentBuild {
-      return isDevelopmentHelperRunning ? .enabled : .notRegistered
+      return .notRegistered
     }
     guard #available(macOS 13, *) else { return .unavailable }
     switch SMAppService.loginItem(identifier: captureHelperIdentifier).status {
     case .enabled:
-      return .enabled
+      return .registered
     case .requiresApproval:
       return .approvalRequired
     case .notRegistered:
       return .notRegistered
     case .notFound:
-      return .unavailable
+      // The helper is embedded, but macOS has not indexed it for
+      // SMAppService yet. Enabling capture will retry registration and use a
+      // signed session fallback if indexing still has not completed.
+      return .notRegistered
     @unknown default:
       return .unavailable
     }
@@ -513,13 +524,21 @@ extension ConversationCaptureCoordinator {
     }
     guard #available(macOS 13, *) else { return false }
     let service = SMAppService.loginItem(identifier: captureHelperIdentifier)
+    let initialStatus = service.status
     do {
-      if service.status == .notRegistered { try service.register() }
+      switch initialStatus {
+      case .notRegistered, .notFound:
+        try service.register()
+      default:
+        break
+      }
       switch service.status {
       case .enabled:
         return true
       case .requiresApproval:
         showLoginItemApprovalRequired()
+        return false
+      case .notFound:
         return false
       default:
         return false
@@ -530,14 +549,14 @@ extension ConversationCaptureCoordinator {
   }
 
   private func unregisterLoginAgent() {
-    if isDevelopmentBuild {
-      for application in NSRunningApplication.runningApplications(
-        withBundleIdentifier: captureHelperIdentifier
-      ) {
-        application.terminate()
-      }
-      return
+    // Stop both an SMAppService-managed instance and the explicit session
+    // fallback. This keeps the opt-out immediate and privacy preserving.
+    for application in NSRunningApplication.runningApplications(
+      withBundleIdentifier: captureHelperIdentifier
+    ) {
+      application.terminate()
     }
+    if isDevelopmentBuild { return }
     guard #available(macOS 13, *) else { return }
     let service = SMAppService.loginItem(identifier: captureHelperIdentifier)
     try? service.unregister()
@@ -554,7 +573,7 @@ extension ConversationCaptureCoordinator {
     Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true
   }
 
-  private var isDevelopmentHelperRunning: Bool {
+  private var isCaptureHelperRunning: Bool {
     !NSRunningApplication.runningApplications(
       withBundleIdentifier: captureHelperIdentifier
     ).isEmpty
@@ -562,7 +581,7 @@ extension ConversationCaptureCoordinator {
 
   @discardableResult
   private func launchDevelopmentHelper() -> Bool {
-    if isDevelopmentHelperRunning { return true }
+    if isCaptureHelperRunning { return true }
     let helperURL = Bundle.main.bundleURL
       .appending(
         path: "Contents/Library/LoginItems/ConversationCaptureHelper.app",

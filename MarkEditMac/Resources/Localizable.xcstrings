@@ -245,6 +245,14 @@
         "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "剪貼簿擷取正在背景執行" } }
       }
     },
+    "Clipboard capture is registered and will start at the next login" : {
+      "localizations" : {
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "La capture du presse-papiers est enregistrée et démarrera à la prochaine connexion" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "クリップボード取り込みは登録済みで、次回ログイン時に開始します" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "剪贴板捕捉已注册，将在下次登录时启动" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "剪貼簿擷取已註冊，將在下次登入時啟動" } }
+      }
+    },
     "Encrypted cloud sync" : {
       "localizations" : {
         "fr" : { "stringUnit" : { "state" : "translated", "value" : "Synchronisation cloud chiffrée" } },
