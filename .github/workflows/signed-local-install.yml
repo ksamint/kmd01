@@ -48,6 +48,25 @@ jobs:
           node-version: 24.19.0
       - name: Validate product identity
         run: node Scripts/validate-product-identity.mjs
+      - name: Test clipboard capture privacy boundary
+        run: |
+          test_dir="$RUNNER_TEMP/clipboard-capture-tests"
+          mkdir -p "$test_dir"
+          swiftc -parse-as-library \
+            ConversationCaptureHelper/ClipboardHistory.swift \
+            Scripts/ClipboardCaptureDecoderTestMain.swift \
+            -o "$test_dir/ClipboardCaptureDecoderTests"
+          "$test_dir/ClipboardCaptureDecoderTests"
+          swiftc -typecheck \
+            ConversationCaptureHelper/ClipboardHistory.swift \
+            ConversationCaptureHelper/ClipboardPaletteController.swift \
+            ConversationCaptureHelper/main.swift
+          if grep -R -n -E \
+            'NSAttributedString\(data:|readObjects\(forClasses:.*NSURL' \
+            ConversationCaptureHelper; then
+            echo 'Clipboard helper contains an unsafe rich-text or URL importer.' >&2
+            exit 1
+          fi
       - name: Build CoreEditor
         working-directory: CoreEditor
         run: |

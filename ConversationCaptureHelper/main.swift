@@ -145,29 +145,34 @@ private final class ClipboardCaptureService: NSObject {
   }
 
   private func captureEnvelope(_ pasteboard: NSPasteboard) -> CaptureEnvelopeV1? {
-    let html = pasteboard.data(forType: .html)
-    let rtf = pasteboard.data(forType: .rtf)
-    // The HTML importer loads a WebKit document on the main thread and takes
-    // tens to hundreds of milliseconds per copy; use the plain-text
-    // representation when the source provides one and import only otherwise.
-    let plain = pasteboard.string(forType: .string).flatMap { $0.isEmpty ? nil : $0 }
-    let attributed = plain != nil
-      ? nil
-      : html.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil).string }
-        ?? rtf.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil).string }
-    guard let text = plain ?? attributed,
-          let bytes = text.data(using: .utf8), !bytes.isEmpty, bytes.count <= Self.maximumBytes else { return nil }
-    let bookmarks = pasteboard.readObjects(forClasses: [NSURL.self], options: nil)?.compactMap { value -> Data? in
-      guard let url = value as? URL else { return nil }
-      return try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+    let html = pasteboard.data(forType: .html).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
+    let rtf = pasteboard.data(forType: .rtf).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
+    let fileURLs = pasteboard.pasteboardItems?.prefix(256).compactMap { item -> URL? in
+      guard let value = item.string(forType: .fileURL), let url = URL(string: value) else { return nil }
+      return url
     } ?? []
+    guard let decoded = ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
+      plainText: pasteboard.string(forType: .string),
+      html: html,
+      rtf: rtf,
+      fileURLs: fileURLs
+    )), let bytes = decoded.content.data(using: .utf8), bytes.count <= Self.maximumBytes else { return nil }
+    // A background clipboard monitor must not open another application's files. Only the
+    // explicit "capture next copy" gesture is allowed to persist access to copied files.
+    let bookmarks = captureNext ? decoded.fileURLs.compactMap { url in
+      try? url.bookmarkData(
+        options: [.withSecurityScope],
+        includingResourceValuesForKeys: nil,
+        relativeTo: nil
+      )
+    } : []
     return CaptureEnvelopeV1(
       version: 1,
       id: UUID(),
       capturedAt: Date(),
       sourceName: nil,
       sourceBundleID: nil,
-      content: text,
+      content: decoded.content,
       html: html,
       rtf: rtf,
       fileBookmarks: bookmarks

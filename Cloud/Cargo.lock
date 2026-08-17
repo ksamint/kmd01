@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "ksamint-api"
-version = "2.5.4"
+version = "2.5.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "ksamint-vault"
-version = "2.5.4"
+version = "2.5.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3680,7 +3680,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vault-protocol"
-version = "2.5.4"
+version = "2.5.5"
 dependencies = [
  "aes-gcm 0.10.3",
  "bip39",

@@ -122,6 +122,7 @@ test -n "$team_id" && test "$actual_team" = "$team_id" || { echo "Unexpected sig
 
 target="/Applications/kmd.app"
 legacy_target="/Applications/ksamint MarkEdit.app"
+backup_root="$HOME/Library/Application Support/kmd/Local App Backups.noindex"
 if [ -d "$target" ] && [ -d "$legacy_target" ]; then
   echo "Installation deferred: both the old and renamed app are installed; remove one after checking for unsaved documents." >&2
   exit 3
@@ -143,12 +144,17 @@ backup=
 backup_source=
 if [ -d "$target" ]; then
   backup_source="$target"
-  backup="/Applications/kmd.backup-$(date +%Y%m%d-%H%M%S).app"
+  backup="$backup_root/kmd-backup-$(date +%Y%m%d-%H%M%S).app.disabled"
 elif [ -d "$legacy_target" ]; then
   backup_source="$legacy_target"
-  backup="/Applications/ksamint MarkEdit.backup-$(date +%Y%m%d-%H%M%S).app"
+  backup="$backup_root/ksamint-MarkEdit-backup-$(date +%Y%m%d-%H%M%S).app.disabled"
 fi
 if [ -n "$backup_source" ]; then
+  mkdir -p "$backup_root"
+  chmod 700 "$backup_root"
+  # A stopped helper cannot keep executing from the rollback bundle after the
+  # app moves. The replacement app re-registers the same stable login item.
+  pkill -TERM -x ConversationCaptureHelper >/dev/null 2>&1 || true
   mv "$backup_source" "$backup"
 fi
 rollback() {
