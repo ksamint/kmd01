@@ -6,7 +6,7 @@ private enum ClipboardCaptureDecoderTestError: Error {
 }
 
 @main
-private struct ClipboardCaptureDecoderTestMain {
+private enum ClipboardCaptureDecoderTestMain {
   static func main() throws {
     let privateResourceHTML = Data(
       """

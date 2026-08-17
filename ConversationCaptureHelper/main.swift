@@ -144,41 +144,6 @@ private final class ClipboardCaptureService: NSObject {
     }
   }
 
-  private func captureEnvelope(_ pasteboard: NSPasteboard) -> CaptureEnvelopeV1? {
-    let html = pasteboard.data(forType: .html).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
-    let rtf = pasteboard.data(forType: .rtf).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
-    let fileURLs = pasteboard.pasteboardItems?.prefix(256).compactMap { item -> URL? in
-      guard let value = item.string(forType: .fileURL), let url = URL(string: value) else { return nil }
-      return url
-    } ?? []
-    guard let decoded = ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
-      plainText: pasteboard.string(forType: .string),
-      html: html,
-      rtf: rtf,
-      fileURLs: fileURLs
-    )), let bytes = decoded.content.data(using: .utf8), bytes.count <= Self.maximumBytes else { return nil }
-    // A background clipboard monitor must not open another application's files. Only the
-    // explicit "capture next copy" gesture is allowed to persist access to copied files.
-    let bookmarks = captureNext ? decoded.fileURLs.compactMap { url in
-      try? url.bookmarkData(
-        options: [.withSecurityScope],
-        includingResourceValuesForKeys: nil,
-        relativeTo: nil
-      )
-    } : []
-    return CaptureEnvelopeV1(
-      version: 1,
-      id: UUID(),
-      capturedAt: Date(),
-      sourceName: nil,
-      sourceBundleID: nil,
-      content: decoded.content,
-      html: html,
-      rtf: rtf,
-      fileBookmarks: bookmarks
-    )
-  }
-
   private func shouldCapture(_ text: String) -> Bool {
     captureNext || text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 80
   }
@@ -312,6 +277,41 @@ private final class ClipboardCaptureService: NSObject {
 }
 
 private extension ClipboardCaptureService {
+  func captureEnvelope(_ pasteboard: NSPasteboard) -> CaptureEnvelopeV1? {
+    let html = pasteboard.data(forType: .html).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
+    let rtf = pasteboard.data(forType: .rtf).flatMap { $0.count <= Self.maximumBytes ? $0 : nil }
+    let fileURLs = pasteboard.pasteboardItems?.prefix(256).compactMap { item -> URL? in
+      guard let value = item.string(forType: .fileURL), let url = URL(string: value) else { return nil }
+      return url
+    } ?? []
+    guard let decoded = ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
+      plainText: pasteboard.string(forType: .string),
+      html: html,
+      rtf: rtf,
+      fileURLs: fileURLs
+    )), let bytes = decoded.content.data(using: .utf8), bytes.count <= Self.maximumBytes else { return nil }
+    // A background clipboard monitor must not open another application's files. Only the
+    // explicit "capture next copy" gesture is allowed to persist access to copied files.
+    let bookmarks = captureNext ? decoded.fileURLs.compactMap { url in
+      try? url.bookmarkData(
+        options: [.withSecurityScope],
+        includingResourceValuesForKeys: nil,
+        relativeTo: nil
+      )
+    } : []
+    return CaptureEnvelopeV1(
+      version: 1,
+      id: UUID(),
+      capturedAt: Date(),
+      sourceName: nil,
+      sourceBundleID: nil,
+      content: decoded.content,
+      html: html,
+      rtf: rtf,
+      fileBookmarks: bookmarks
+    )
+  }
+
   func scheduleKnowledgeExport() {
     knowledgeExportTask?.cancel()
     let items = clipboardHistory.items

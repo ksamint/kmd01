@@ -141,6 +141,7 @@
 		B5086474EC0968B8E2FC20C4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA5D42A42431B42A426528D /* main.swift */; };
 		DC1000013000000000000001 /* ClipboardHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000023000000000000001 /* ClipboardHistory.swift */; };
 		DC1000033000000000000001 /* ClipboardPaletteController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000043000000000000001 /* ClipboardPaletteController.swift */; };
+		DC1000053000000000000001 /* ClipboardCaptureDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */; };
 		CC000002300000000000001A /* EditorDocument+ClosedTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000002300000000000001B /* EditorDocument+ClosedTab.swift */; };
 		CC000003300000000000001A /* AppDelegate+ClosedTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000003300000000000001B /* AppDelegate+ClosedTab.swift */; };
 		CC000004300000000000001A /* EditorSelectionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000004300000000000001B /* EditorSelectionHistory.swift */; };
@@ -363,6 +364,7 @@
 		DCA5D42A42431B42A426528D /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		DC1000023000000000000001 /* ClipboardHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardHistory.swift; sourceTree = "<group>"; };
 		DC1000043000000000000001 /* ClipboardPaletteController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardPaletteController.swift; sourceTree = "<group>"; };
+		DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardCaptureDecoder.swift; sourceTree = "<group>"; };
 		EE100007EEEE000000000007 /* ExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionInstaller.swift; sourceTree = "<group>"; };
 		EE100009EEEE000000000009 /* ExtensionUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionUpdater.swift; sourceTree = "<group>"; };
 		EE10000BEEEE00000000000B /* ExtensionsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionsModel.swift; sourceTree = "<group>"; };
@@ -432,6 +434,7 @@
 				DCA5D42A42431B42A426528D /* main.swift */,
 				DC1000023000000000000001 /* ClipboardHistory.swift */,
 				DC1000043000000000000001 /* ClipboardPaletteController.swift */,
+				DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */,
 				B8782CD1AC62B06DEFEB2EF8 /* Info.plist */,
 				200052792AFC3629E3243183 /* Info.entitlements */,
 				352C0D29372D6300A5A0F153 /* Localizable.xcstrings */,
@@ -1118,6 +1121,7 @@
 				B5086474EC0968B8E2FC20C4 /* main.swift in Sources */,
 				DC1000013000000000000001 /* ClipboardHistory.swift in Sources */,
 				DC1000033000000000000001 /* ClipboardPaletteController.swift in Sources */,
+				DC1000053000000000000001 /* ClipboardCaptureDecoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -74,8 +74,8 @@ private struct ClipboardHistoryStoreTestMain {
     let journalSizeBeforeClear = try Data(contentsOf: archiveURL).count
     store.clear()
     try expect(store.items.count == 2, "keeps permanent clipboard knowledge when recent history is cleared")
-    try expect(store.items.contains(where: { $0.id == permanent.id }), "keeps the automatic permanent record")
-    try expect(store.items.contains(where: { $0.id == itemID }), "keeps the favorited record")
+    try expect(store.items.contains { $0.id == permanent.id }, "keeps the automatic permanent record")
+    try expect(store.items.contains { $0.id == itemID }, "keeps the favorited record")
     try expect(store.tags.map(\.name) == ["常用 Command"], "keeps user labels when history is cleared")
     let journalSizeAfterClear = try Data(contentsOf: archiveURL).count
     try expect(journalSizeAfterClear < journalSizeBeforeClear, "physically compacts cleared recent history")
@@ -91,13 +91,13 @@ private struct ClipboardHistoryStoreTestMain {
     let companyTag = try unwrap(store.createTag(named: "公司信息"), "creates a global classification")
     try expect(store.toggleTag(companyTag.id, for: classifiedID) == true, "classifies the item")
     try expect(
-      store.items.first(where: { $0.id == classifiedID })?.isPermanent == true,
+      store.items.first { $0.id == classifiedID }?.isPermanent == true,
       "classifying a record makes it permanent"
     )
     try expect(store.togglePermanent(itemID: classifiedID) == true, "does not disable retention for labeled records")
     try expect(store.togglePinned(itemID: classifiedID) == true, "favorites the item")
     try expect(
-      store.items.first(where: { $0.id == classifiedID })?.isPermanent == true,
+      store.items.first { $0.id == classifiedID }?.isPermanent == true,
       "favoriting a record makes it permanent"
     )
 
@@ -109,18 +109,20 @@ private struct ClipboardHistoryStoreTestMain {
     )
     try expect(export.written >= 2, "exports permanent clipboard knowledge as Markdown")
     let clipboardRoot = knowledgeRoot.appending(path: "Clipboard", directoryHint: .isDirectory)
-    let exportedAtRoot = try FileManager.default.contentsOfDirectory(
+    let clipboardRootEntries = try FileManager.default.contentsOfDirectory(
       at: clipboardRoot,
       includingPropertiesForKeys: nil,
       options: [.skipsHiddenFiles]
-    ).filter { $0.pathExtension == "md" }
+    )
+    let exportedAtRoot = clipboardRootEntries.filter { $0.pathExtension == "md" }
     try expect(
       exportedAtRoot.map(\.lastPathComponent) == ["Labels.md"],
       "stores only the global label catalog at the Clipboard root"
     )
+    let exportedMarkdown = recursiveMarkdownFiles(at: knowledgeRoot)
+      .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
     let classifiedMarkdown = try unwrap(
-      recursiveMarkdownFiles(at: knowledgeRoot).compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-        .first(where: { $0.contains("clipboard_id: \(classifiedID)") }),
+      exportedMarkdown.first { $0.contains("clipboard_id: \(classifiedID)") },
       "exports the classified record"
     )
     try expect(classifiedMarkdown.contains("tags: [\"clipboard\", \"公司信息\"]"), "exports global labels")
@@ -191,7 +193,7 @@ private struct ClipboardHistoryStoreTestMain {
     ), "appends after trimming a truncated tail")
     let recoveredAgain = ClipboardHistoryStore(fileURL: migratedJournalURL, key: key)
     try expect(
-      recoveredAgain.items.contains(where: { $0.content == "recorded after truncated tail recovery" }),
+      recoveredAgain.items.contains { $0.content == "recorded after truncated tail recovery" },
       "replays records appended after truncated-tail recovery"
     )
 

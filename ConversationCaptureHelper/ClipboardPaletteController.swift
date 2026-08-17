@@ -318,7 +318,7 @@ private extension ClipboardPaletteController {
     query: String
   ) -> [ClipboardHistoryItem] {
     let tagNames = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0.name) })
-    return items.filter { item in
+    let matches = items.filter { item in
       guard !Task.isCancelled else { return false }
       let matchesFilter = switch filter {
       case .recent: true
@@ -334,7 +334,8 @@ private extension ClipboardPaletteController {
       return item.content.localizedStandardContains(query)
         || tagText.localizedStandardContains(query)
         || sourceText.localizedStandardContains(query)
-    }.sorted { lhs, rhs in
+    }
+    return matches.sorted { lhs, rhs in
       if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
       return lhs.capturedAt > rhs.capturedAt
     }
@@ -513,7 +514,7 @@ private extension ClipboardPaletteController {
       let item = NSMenuItem(title: tag.name, action: #selector(toggleTagFromMenu(_:)), keyEquivalent: "")
       item.target = self
       item.representedObject = tag.id
-      item.state = store.items.first(where: { $0.id == itemID })?.tagIDs.contains(tag.id) == true ? .on : .off
+      item.state = store.items.first { $0.id == itemID }?.tagIDs.contains(tag.id) == true ? .on : .off
       menu.addItem(item)
     }
     if !store.tags.isEmpty { menu.addItem(.separator()) }
