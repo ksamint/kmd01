@@ -57,9 +57,8 @@ enum ClipboardCaptureDecoder {
   /// Deliberately uses text transforms rather than AppKit's HTML attributed-string importer.
   /// The attributed-string importer can create WebKit processes and resolve local resources.
   private static func htmlText(_ data: Data) -> String? {
-    let source = String(bytes: data, encoding: .utf8)
-      ?? String(bytes: data, encoding: .utf16)
-      ?? String(decoding: data, as: UTF8.self)
+    guard let source = String(bytes: data, encoding: .utf8)
+      ?? String(bytes: data, encoding: .utf16) else { return nil }
     var value = replacing(
       #"<(script|style|noscript|template|iframe|object|embed)\b[^>]*>[\s\S]*?(?:</\1\s*>|$)"#,
       in: source,
