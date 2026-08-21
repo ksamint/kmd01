@@ -26,11 +26,11 @@
     "@eslint/js": "^10.0.1",
     "@hpke/core": "^1.9.0",
     "@ksamint/vault-protocol": "file:../VaultProtocolTS",
-    "@types/node": "^24.2.1",
+    "@types/node": "^26.2.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.8.1",
-    "globals": "^17.10.0",
-    "typescript": "5.9.3",
+    "globals": "^17.11.0",
+    "typescript": "7.0.2",
     "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.10"
   }
