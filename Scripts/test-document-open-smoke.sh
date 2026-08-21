@@ -54,6 +54,17 @@ sleep 1
 open -a "$app" "$fixture"
 sleep 4
 
+# Exercise NSDocument's write path as well as its concurrent-read path. Swift 6
+# traps if EditorDocument advertises asynchronous writes while touching its
+# main-actor AppKit/WebKit state.
+osascript <<'APPLESCRIPT'
+tell application "kmd"
+  set source of front document to "# Save smoke test"
+  save front document
+end tell
+APPLESCRIPT
+sleep 2
+
 after_reports=$before_reports
 if [ -d "$diagnostic_directory" ]; then
   after_reports=$(find "$diagnostic_directory" -maxdepth 1 -type f -name 'kmd-*.ips' | wc -l | tr -d ' ')
@@ -74,9 +85,11 @@ if ! kill -0 "$app_pid" >/dev/null 2>&1; then
 fi
 
 if [ "$after_reports" -gt "$before_reports" ]; then
-  echo "kmd generated a crash report while opening a Markdown document" >&2
+  echo "kmd generated a crash report while opening or saving a Markdown document" >&2
   print_latest_crash
   exit 1
 fi
 
-echo "Document-open smoke test passed (pid=$app_pid)"
+grep -F '# Save smoke test' "$fixture" >/dev/null
+
+echo "Document open/save smoke test passed (pid=$app_pid)"
