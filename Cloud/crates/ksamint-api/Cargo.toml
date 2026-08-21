@@ -20,7 +20,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["http2", 
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sha1 = "0.10"
+sha1 = "0.11"
 sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror.workspace = true
 tokio.workspace = true
