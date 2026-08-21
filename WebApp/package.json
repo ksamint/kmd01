@@ -16,11 +16,11 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@codemirror/commands": "^6.8.1",
+    "@codemirror/commands": "^6.11.0",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language": "^6.11.3",
     "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.43.8",
+    "@codemirror/view": "^6.43.9",
     "@huggingface/tokenizers": "^0.1.3",
     "@ksamint/vault-protocol": "file:../VaultProtocolTS",
     "@scure/bip39": "^2.3.0",
