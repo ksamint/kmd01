@@ -62,12 +62,25 @@ sleep 4
 # Exercise NSDocument's write path as well as its concurrent-read path. Swift 6
 # traps if EditorDocument advertises asynchronous writes while touching its
 # main-actor AppKit/WebKit state.
-osascript <<APPLESCRIPT
+osascript <<APPLESCRIPT &
 tell application "$app"
   set source of front document to "# Save smoke test"
   save front document
 end tell
 APPLESCRIPT
+script_pid=$!
+attempt=0
+while kill -0 "$script_pid" >/dev/null 2>&1 && [ "$attempt" -lt 40 ]; do
+  attempt=$((attempt + 1))
+  sleep 0.25
+done
+if kill -0 "$script_pid" >/dev/null 2>&1; then
+  kill -TERM "$script_pid" >/dev/null 2>&1 || true
+  wait "$script_pid" 2>/dev/null || true
+  echo "Timed out asking $process_name to save; check Automation permission" >&2
+  exit 1
+fi
+wait "$script_pid"
 sleep 2
 
 after_reports=$before_reports
