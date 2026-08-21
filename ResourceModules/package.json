@@ -14,7 +14,7 @@
     "verify": "node scripts/verify.mjs && npm test"
   },
   "dependencies": {
-    "js-yaml": "5.2.3"
+    "js-yaml": "5.3.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
