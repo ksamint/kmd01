@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       full_compatibility:
-        description: Also run the macOS 15 release compatibility build
+        description: Run the GitHub-hosted macOS 26 and macOS 15 builds
         required: false
         default: false
         type: boolean
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   changes:
     name: Select affected checks
-    runs-on: ubuntu-slim
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     outputs:
       mac: ${{ steps.filter.outputs.mac }}
       web: ${{ steps.filter.outputs.web }}
@@ -72,14 +72,12 @@ jobs:
     name: Signed resource preview modules
     needs: changes
     if: needs.changes.outputs.resource_modules == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-          cache: npm
-          cache-dependency-path: ResourceModules/package-lock.json
       - name: Verify signatures, hashes, sandbox policy, and archive parsers
         working-directory: ResourceModules
         run: |
@@ -91,14 +89,12 @@ jobs:
     name: Read-only Agent SDK
     needs: changes
     if: needs.changes.outputs.agent_sdk == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-          cache: npm
-          cache-dependency-path: AgentSDK/package-lock.json
       - name: Validate TypeScript SDK
         working-directory: AgentSDK
         run: |
@@ -112,7 +108,7 @@ jobs:
     name: Local Agent CLI contracts
     needs: changes
     if: needs.changes.outputs.agent_contracts == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -140,7 +136,7 @@ jobs:
     name: Private cloud and recovery
     needs: changes
     if: needs.changes.outputs.cloud == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     defaults:
       run:
         working-directory: Cloud
@@ -182,14 +178,12 @@ jobs:
     name: Web and CoreEditor
     needs: changes
     if: needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, apuch-ci, nanjing, kmd01]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-          cache: npm
-          cache-dependency-path: WebApp/package-lock.json
       - name: Build and test CoreEditor
         working-directory: CoreEditor
         run: |
@@ -212,7 +206,7 @@ jobs:
   mac:
     name: kmd (ARM64, macOS 26)
     needs: changes
-    if: needs.changes.outputs.mac == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.full_compatibility && needs.changes.outputs.mac == 'true'
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
