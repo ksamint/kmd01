@@ -5,10 +5,15 @@ app=${1:?"usage: test-document-open-smoke.sh /path/to/kmd.app"}
 executable="$app/Contents/MacOS/kmd"
 
 test -d "$app"
+if [ ! -x "$executable" ]; then
+  executable_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+  executable="$app/Contents/MacOS/$executable_name"
+fi
 test -x "$executable"
+process_name=$(basename "$executable")
 
-if pgrep -x kmd >/dev/null 2>&1; then
-  echo "kmd is already running; refusing an ambiguous document-open smoke test" >&2
+if pgrep -x "$process_name" >/dev/null 2>&1; then
+  echo "$process_name is already running; refusing an ambiguous document-open smoke test" >&2
   exit 2
 fi
 
@@ -28,7 +33,7 @@ trap cleanup EXIT INT TERM
 diagnostic_directory="$HOME/Library/Logs/DiagnosticReports"
 before_reports=0
 if [ -d "$diagnostic_directory" ]; then
-  before_reports=$(find "$diagnostic_directory" -maxdepth 1 -type f -name 'kmd-*.ips' | wc -l | tr -d ' ')
+  before_reports=$(find "$diagnostic_directory" -maxdepth 1 -type f -name "$process_name-*.ips" | wc -l | tr -d ' ')
 fi
 
 open -n -a "$app"
@@ -36,14 +41,14 @@ open -n -a "$app"
 app_pid=""
 attempt=0
 while [ "$attempt" -lt 20 ]; do
-  app_pid=$(pgrep -x kmd | head -1 || true)
+  app_pid=$(pgrep -x "$process_name" | head -1 || true)
   [ -n "$app_pid" ] && break
   attempt=$((attempt + 1))
   sleep 0.25
 done
 
 if [ -z "$app_pid" ]; then
-  echo "kmd did not launch" >&2
+  echo "$process_name did not launch" >&2
   exit 1
 fi
 
@@ -54,13 +59,37 @@ sleep 1
 open -a "$app" "$fixture"
 sleep 4
 
+# Exercise NSDocument's write path as well as its concurrent-read path. Swift 6
+# traps if EditorDocument advertises asynchronous writes while touching its
+# main-actor AppKit/WebKit state.
+osascript <<APPLESCRIPT &
+tell application "$app"
+  set source of front document to "# Save smoke test"
+  save front document
+end tell
+APPLESCRIPT
+script_pid=$!
+attempt=0
+while kill -0 "$script_pid" >/dev/null 2>&1 && [ "$attempt" -lt 40 ]; do
+  attempt=$((attempt + 1))
+  sleep 0.25
+done
+if kill -0 "$script_pid" >/dev/null 2>&1; then
+  kill -TERM "$script_pid" >/dev/null 2>&1 || true
+  wait "$script_pid" 2>/dev/null || true
+  echo "Timed out asking $process_name to save; check Automation permission" >&2
+  exit 1
+fi
+wait "$script_pid"
+sleep 2
+
 after_reports=$before_reports
 if [ -d "$diagnostic_directory" ]; then
-  after_reports=$(find "$diagnostic_directory" -maxdepth 1 -type f -name 'kmd-*.ips' | wc -l | tr -d ' ')
+  after_reports=$(find "$diagnostic_directory" -maxdepth 1 -type f -name "$process_name-*.ips" | wc -l | tr -d ' ')
 fi
 
 print_latest_crash() {
-  latest_report=$(find "$diagnostic_directory" -maxdepth 1 -type f -name 'kmd-*.ips' -print 2>/dev/null | sort | tail -1)
+  latest_report=$(find "$diagnostic_directory" -maxdepth 1 -type f -name "$process_name-*.ips" -print 2>/dev/null | sort | tail -1)
   if [ -n "$latest_report" ]; then
     echo "Latest crash report: $latest_report" >&2
     sed -n '1,180p' "$latest_report" >&2
@@ -74,9 +103,11 @@ if ! kill -0 "$app_pid" >/dev/null 2>&1; then
 fi
 
 if [ "$after_reports" -gt "$before_reports" ]; then
-  echo "kmd generated a crash report while opening a Markdown document" >&2
+  echo "kmd generated a crash report while opening or saving a Markdown document" >&2
   print_latest_crash
   exit 1
 fi
 
-echo "Document-open smoke test passed (pid=$app_pid)"
+grep -F '# Save smoke test' "$fixture" >/dev/null
+
+echo "Document open/save smoke test passed (pid=$app_pid)"

@@ -290,7 +290,10 @@ extension EditorDocument {
   }
 
   override func canAsynchronouslyWrite(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType) -> Bool {
-    true
+    // EditorDocument owns AppKit and WebKit state isolated to the main actor.
+    // Advertising concurrent writes lets NSDocument call these overrides from a
+    // worker queue, which traps under Swift 6 executor checks.
+    false
   }
 
   override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
