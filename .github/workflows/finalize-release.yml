@@ -13,16 +13,30 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: release-finalizer
   cancel-in-progress: false
 
 jobs:
-  finalize:
+  preflight:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require protected main before exposing release credentials
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .protected)" = true
+
+  finalize:
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-26
     environment: release
     env:
@@ -36,8 +50,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Check preserved submissions and publish accepted releases
+      - name: Prepare stapled drafts; publish only exact-artifact runtime acceptance
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
         run: |
@@ -53,6 +69,8 @@ jobs:
           fi
 
           for tag in $tags; do
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
             work="$RUNNER_TEMP/finalize-${tag//\//-}"
             mkdir -p "$work"
             if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
@@ -67,6 +85,7 @@ jobs:
             test "$team" = "$APPLE_TEAM_ID"
             git fetch --force --tags origin "$tag"
             test "$(git rev-list -n 1 "$tag")" = "$commit"
+            python3 Scripts/ci-release-gates.py trusted-build "$commit"
 
             all_accepted=true
             for id in $(jq -r '.dmg.submissionID,.cli.submissionID' "$metadata"); do
@@ -95,12 +114,16 @@ jobs:
 
             dmg_asset="$(jq -r '.dmg.asset' "$metadata")"
             cli_asset="$(jq -r '.cli.asset' "$metadata")"
+            test "$dmg_asset" = "ksamint-MarkEdit-${tag#v}.dmg"
+            test "$cli_asset" = ksamint-vault-macos-arm64.zip
             gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$work" \
               --pattern "$dmg_asset" --pattern "$cli_asset" \
               --pattern 'ksamint-agent-sdk-*.tgz' --pattern 'ksamint-resource-modules-*.zip' \
               --pattern ReleaseInfo.json
             dmg="$work/$dmg_asset"
             cli="$work/$cli_asset"
+            test "$(shasum -a 256 "$dmg" | awk '{print $1}')" = "$(jq -r '.dmg.stapledSHA256 // .dmg.sha256' "$metadata")"
+            test "$(shasum -a 256 "$cli" | awk '{print $1}')" = "$(jq -r '.cli.sha256' "$metadata")"
             xcrun stapler staple "$dmg"
             xcrun stapler validate "$dmg"
 
@@ -108,7 +131,7 @@ jobs:
             mkdir -p "$mount"
             hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
             app="$mount/kmd.app"
-            Scripts/verify-release-app.sh "$app" "$team" "$commit"
+            Scripts/verify-release-app.sh "$app" "$team" "$commit" universal
             spctl --assess --type execute -vv "$app"
             hdiutil detach "$mount"
 
@@ -130,7 +153,22 @@ jobs:
               "$work/ksamint-agent-sdk-$version.tgz" \
               "$work/ksamint-resource-modules-$version.zip" \
               | sed "s#$work/##" > "$work/SHA256SUMS"
-            gh release upload "$tag" "$dmg" "$work/SHA256SUMS" \
+            jq --arg sha "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
+              '.dmg.stapledSHA256 = $sha' "$metadata" > "$work/NotarySubmission.next.json"
+            mv "$work/NotarySubmission.next.json" "$metadata"
+            gh release upload "$tag" "$dmg" "$work/SHA256SUMS" "$metadata" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+
+            # Acceptance is reviewed on protected main after testing these exact stapled bytes.
+            acceptance_path="docs/release-acceptance/$tag.json"
+            if ! git show "origin/main:$acceptance_path" > "$work/RuntimeAcceptance.json"; then
+              echo "$tag is ready for runtime acceptance; draft remains unpublished."
+              continue
+            fi
+            python3 Scripts/ci-release-gates.py acceptance \
+              "$work/RuntimeAcceptance.json" "$commit" "$dmg" "$cli" \
+              "$work/ksamint-agent-sdk-$version.tgz" "$work/ksamint-resource-modules-$version.zip"
+            gh release upload "$tag" "$work/RuntimeAcceptance.json" \
               --repo "$GITHUB_REPOSITORY" --clobber
             # The releases/tags REST endpoint deliberately hides draft
             # releases, and not every supported gh build exposes databaseId
