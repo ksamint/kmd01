@@ -27,7 +27,7 @@ approval**. Do not create a positive acceptance JSON from this document.
 | Web sync | Read-only interval, common write guard, fresh stored snapshot, network deadline, late-result rejection | Automated failure/concurrency tests; live cloud/manual browser pending |
 | Manifest cleanup | Orphans only removed after manifest save | Notes and attachments failure regression tests |
 | Failed editor saves | Retain per-file edits until successfully written | Cross-file failure + newer-edit regressions |
-| Persistent access | Per-process persistent bookmarks, temporary cross-process handoff, scope balancing, stale refresh and revocation generations | Injected-operation tests and Swift typechecks; real signed/reboot matrix pending |
+| Persistent access | Per-process bookmarks, scope balancing, stale refresh/revocation generations, recoverable error statuses and explicit retry | Injected-operation/error tests and Swift typechecks; real signed/reboot matrix pending |
 | Final signing verifier | Exact source SHA, all component identity/version/SHA, entitlements/profile grants/expiry, hardened runtime, all Mach-O architectures | Synthetic positive/negative profile tests; real new candidate pending |
 | CI/release gates | Hosted Linux, automatic Mac matrix, fail-closed aggregate, protected-main signing, exact-asset acceptance | Local actionlint/shellcheck/unit tests; remote matrix pending |
 
@@ -43,7 +43,7 @@ Local completed checks (record only actual completed results):
 - Cloud: formatting, clippy (`-D warnings`), **19 tests** and strict dependency
   audit passed after minimal lockfile patches; the pre-existing RSA exception
   remains unchanged. No protocol or encryption-format changes.
-- Identity: **2.5.6 (19)**; **2716 localized catalog entries** validated.
+- Identity: **2.5.6 (19)**; **2736 localized catalog entries** validated.
 - Clipboard decoder/history harness and helper Swift typecheck passed after
   cross-process grant changes. Independent review added stale-refresh generation
   and long-lived Quick Action scope ownership regressions; tests/typechecks passed.
@@ -64,6 +64,19 @@ Local completed checks (record only actual completed results):
   dedicated lifecycle test on fresh macOS 26 ARM and macOS 15 ARM/Intel runners.
   Provenance regressions (3 tests), actionlint and ShellCheck passed. No candidate
   exists yet, so signed runtime execution remains pending.
+- Hosted run `39416948995`: both Universal App builds, MarkEditKit and
+  MarkEditCore tests passed. macOS 26 Modules ran 120 tests with no failures and
+  two existing material-view skips (backdrop unavailable in the runner).
+  macOS 15 had one obsolete private-class assertion; its actual titlebar accessor
+  test passed. That assertion now follows the existing cross-version behavior.
+  macOS 26's dedicated lifecycle test reached the first save request and timed
+  out; no crash report was produced. Automation diagnostics and a fresh complete
+  run are required before signing. These results are not a lifecycle pass.
+- Workspace failure messages classify existing errors without additional disk
+  probes. Unknown failures retain bookmarks and offer retry; permission errors
+  offer an explicit folder selection. Capture sharing reports an unavailable
+  existing container result without inferring its cause or changing fallback
+  storage. Local injected-error/queue/tree checks passed; full App CI is pending.
 
 ## Repository disclosure and settings
 
