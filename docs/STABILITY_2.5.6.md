@@ -98,6 +98,21 @@ Local completed checks (record only actual completed results):
   each returned submission response even if the second submission fails.
   Four signing regressions, including partial submission failure and draft-only
   success, pass locally. This is recovery preparation, not a signed release.
+- Hosted run `39421305857` passed both new Universal builds and all Swift
+  suites, including the read-completion regression. The first UI fallback
+  exposed an incorrect System Events property name. A temporary diagnostic
+  branch then reused the unchanged macOS 15 artifact while recording only the
+  two test-harness overlays, their hashes and original source commit.
+- Diagnostic `39424255863` passed **all 30 consecutive lifecycle cycles**, with
+  30 distinct restored process IDs and no main/helper crash reports. It verified
+  copied editor source and exact saved bytes. A restored window must be raised
+  before inspecting its WebKit accessibility subtree; the prior order failed
+  after seven cycles although the app remained responsive. No app source or
+  privacy settings changed between those diagnostic runs. The original artifact
+  remained commit `e7a6152a558b5461ce24910cc970a6a8d9e64880`, ZIP SHA256
+  `af0752e7d06a19e3b46fbc9de791e0153fcce5b523b70237d99e156032a57510`.
+  This diagnostic is not final CI or signed-artifact acceptance. The integrated
+  harness still requires the complete macOS 26/15 and cross-version matrix.
 
 ## Repository disclosure and settings
 
