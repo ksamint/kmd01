@@ -84,10 +84,12 @@ capture_failure() {
   sed -n 's/.*\[PID=\([0-9][0-9]*\)\] WebProcessProxy::didBecomeUnresponsive:.*/\1/p' \
     "$temporary/automation.log" | sort -u | head -4 | while IFS= read -r renderer_pid; do
       renderer_command=$(ps -p "$renderer_pid" -o comm= 2>/dev/null || true)
+      echo "Owned unresponsive renderer pid=$renderer_pid executable=$renderer_command" >&2
       case "$renderer_command" in
         */com.apple.WebKit.WebContent)
           diagnostic_command sample "$renderer_pid" 2 10 \
-            -file "$temporary/webcontent-$renderer_pid.log" >/dev/null 2>&1 ;;
+            -file "$temporary/webcontent-$renderer_pid.log" \
+            >"$temporary/webcontent-$renderer_pid-command.log" 2>&1 ;;
       esac
     done
   for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" \
