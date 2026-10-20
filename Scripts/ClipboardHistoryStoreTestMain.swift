@@ -20,15 +20,18 @@ private enum ClipboardHistoryTestError: Error {
 @MainActor
 private struct ClipboardHistoryStoreTestMain {
   static func main() throws {
+    try testFileProtectionCapabilities()
     let root = FileManager.default.temporaryDirectory
       .appending(path: "kmd-clipboard-history-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+    print("Clipboard test volume supports file protection: \(try ClipboardFileProtection.volumeSupportsProtection(root) as Any)")
 
     let key = SymmetricKey(size: .bits256)
     let archiveURL = root.appending(path: "history.ksc")
     var store = ClipboardHistoryStore(fileURL: archiveURL, key: key)
-    try expect(store.record(content: "ACME invoice 1001", sourceName: "Tests", sourceBundleID: nil, hasFiles: false), "records content")
+    let recorded = store.record(content: "ACME invoice 1001", sourceName: "Tests", sourceBundleID: nil, hasFiles: false)
+    try expect(recorded, "records content; persistence=\(store.lastPersistenceFailure ?? "none")")
     let journalPermissions = try FileManager.default.attributesOfItem(atPath: archiveURL.path)[.posixPermissions] as? NSNumber
     try expect(journalPermissions?.intValue == 0o600, "protects the encrypted journal from other local users")
     let invoice = try unwrap(store.createTag(named: " 发票信息 "), "creates a label")
@@ -242,6 +245,61 @@ private struct ClipboardHistoryStoreTestMain {
     _ message: String
   ) throws {
     if !condition() { throw ClipboardHistoryTestError.failed(message) }
+  }
+
+  private static func testFileProtectionCapabilities() throws {
+    let url = URL(fileURLWithPath: "/unused-journal-test")
+    for supported: Bool? in [false, true, nil] {
+      var writes = [[FileAttributeKey: Any]]()
+      let options = try ClipboardFileProtection.atomicWriteOptions(
+        for: url, supportsProtection: { _ in supported }
+      )
+      try expect(options.contains(.atomic), "writes remain atomic on every volume")
+      try expect(options.contains(.completeFileProtectionUnlessOpen) == (supported != false),
+                 "atomic writes only omit protection on explicitly unsupported volumes")
+      try ClipboardFileProtection.apply(
+        to: url,
+        supportsProtection: { _ in supported },
+        setAttributes: { attributes, _ in writes.append(attributes) }
+      )
+      try expect(writes.first?[.posixPermissions] as? Int == 0o600, "always requires owner-only permissions")
+      try expect(writes.count == (supported == false ? 1 : 2), "only explicitly unsupported volumes omit file protection")
+      if supported != false {
+        try expect(writes.last?[.protectionKey] as? FileProtectionType == .completeUnlessOpen,
+                   "supported or unknown volumes require file protection")
+      }
+    }
+    for supported in [false, true] {
+      do {
+        try ClipboardFileProtection.apply(
+          to: url, supportsProtection: { _ in supported },
+          setAttributes: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        )
+        throw ClipboardHistoryTestError.failed("must propagate permission failures")
+      } catch let error as CocoaError {
+        try expect(error.code == .fileWriteNoPermission, "preserves permission failure")
+      }
+    }
+    do {
+      try ClipboardFileProtection.apply(
+        to: url, supportsProtection: { _ in true },
+        setAttributes: { attributes, _ in
+          if attributes[.protectionKey] != nil { throw CocoaError(.fileWriteUnknown) }
+        }
+      )
+      throw ClipboardHistoryTestError.failed("must propagate supported protection failures")
+    } catch let error as CocoaError {
+      try expect(error.code == .fileWriteUnknown, "preserves protection failure")
+    }
+    do {
+      try ClipboardFileProtection.apply(
+        to: url, supportsProtection: { _ in throw CocoaError(.fileReadUnknown) },
+        setAttributes: { _, _ in }
+      )
+      throw ClipboardHistoryTestError.failed("must propagate capability lookup failures")
+    } catch let error as CocoaError {
+      try expect(error.code == .fileReadUnknown, "preserves capability lookup failure")
+    }
   }
 
   private static func unwrap<Value>(_ value: Value?, _ message: String) throws -> Value {
