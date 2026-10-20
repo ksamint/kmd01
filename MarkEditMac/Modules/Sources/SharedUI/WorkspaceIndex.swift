@@ -121,18 +121,12 @@ public actor WorkspaceIndex {
 
   /// One connection for the lifetime of the actor. Opening SQLite and replaying
   /// the schema on every call used to dominate search and refresh latency.
-  private var connection: OpaquePointer?
+  private var connection: DatabaseConnection?
   private var isConfigured = false
 
   public init(rootURL: URL, databaseURL: URL? = nil) {
     self.rootURL = rootURL.standardizedFileURL
     self.databaseURL = databaseURL ?? Self.defaultDatabaseURL(rootURL: rootURL)
-  }
-
-  deinit {
-    if let connection {
-      sqlite3_close(connection)
-    }
   }
 
   @discardableResult
@@ -393,6 +387,20 @@ public actor WorkspaceIndex {
 // MARK: - SQLite
 
 private extension WorkspaceIndex {
+  /// Confined to this actor. Its nonisolated lifetime owns the handle so actor
+  /// teardown can release it without accessing a non-Sendable pointer in deinit.
+  final class DatabaseConnection {
+    let handle: OpaquePointer
+
+    init(_ handle: OpaquePointer) {
+      self.handle = handle
+    }
+
+    deinit {
+      sqlite3_close(handle)
+    }
+  }
+
   enum DatabaseError: Error {
     case open(String)
     case execute(String)
@@ -407,7 +415,7 @@ private extension WorkspaceIndex {
 
   func openDatabaseIfNeeded() throws -> OpaquePointer {
     if let connection {
-      return connection
+      return connection.handle
     }
 
     try FileManager.default.createDirectory(
@@ -428,7 +436,7 @@ private extension WorkspaceIndex {
     }
 
     sqlite3_busy_timeout(database, 2_000)
-    connection = database
+    connection = DatabaseConnection(database)
     return database
   }
 

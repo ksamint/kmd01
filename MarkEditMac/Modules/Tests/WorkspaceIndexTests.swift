@@ -5,9 +5,51 @@
 //
 
 import SharedUI
+import SQLite3
 import XCTest
 
 final class WorkspaceIndexTests: XCTestCase {
+  func testReleasingIndexClosesDatabase() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let database = root.appending(path: "index.sqlite")
+    try "persisted note".write(
+      to: root.appending(path: "note.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    var index: WorkspaceIndex? = WorkspaceIndex(rootURL: root, databaseURL: database)
+    let count = try await index?.rebuild()
+    XCTAssertEqual(count, 1)
+
+    // A second connection cannot leave WAL mode while the index still owns its
+    // connection. WAL file deletion itself is not portable across SQLite builds.
+    var probe: OpaquePointer?
+    XCTAssertEqual(sqlite3_open(database.path, &probe), SQLITE_OK)
+    defer { sqlite3_close(probe) }
+    XCTAssertEqual(sqlite3_exec(probe, "PRAGMA journal_mode=DELETE", nil, nil, nil), SQLITE_BUSY)
+    weak var releasedIndex = index
+    index = nil
+
+    // An actor's last task reference may be released just after its await returns.
+    for _ in 0..<100 {
+      if releasedIndex == nil {
+        break
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertNil(releasedIndex)
+    XCTAssertEqual(sqlite3_exec(probe, "PRAGMA journal_mode=DELETE", nil, nil, nil), SQLITE_OK)
+
+    let reopened = WorkspaceIndex(rootURL: root, databaseURL: database)
+    let files = await reopened.recentFiles()
+    XCTAssertEqual(files.map(\.path), ["note.md"])
+  }
+
   func testMultilingualSearchAndShortQueries() async throws {
     let root = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
