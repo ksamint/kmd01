@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const {
   exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission,
   exactAXWindow, exactAXEditor, operateAXDocument, copyFocusedSource, isProductionBundle, run,
+  diagnosticWindowIDs,
 } = require('./ci-document-smoke.js');
 const fixture = { file: () => '/isolated/fixture.md' };
 const unrelated = { file: () => '/real-user/notes.md' };
@@ -268,3 +269,18 @@ global.Application = pid => {
 run(['save', appPath, '103', '/tmp/fixture.md', '# granted UI fixture']);
 assert.equal(editorSource, '# granted UI fixture');
 console.log('System Events fallback checks its own nonprompting grant and existing AX permission.');
+
+const diagnosticWindow = { kCGWindowOwnerPID: 103, kCGWindowLayer: 0,
+  kCGWindowIsOnscreen: true, kCGWindowNumber: 42 };
+assert.equal(diagnosticWindowIDs([diagnosticWindow,
+  { ...diagnosticWindow, kCGWindowOwnerPID: 999 },
+  { ...diagnosticWindow, kCGWindowLayer: 1 },
+  { ...diagnosticWindow, kCGWindowIsOnscreen: false }], 103), '42');
+assert.throws(() => diagnosticWindowIDs([{ ...diagnosticWindow, kCGWindowNumber: '42' }], 103), /Invalid/);
+assert.throws(() => diagnosticWindowIDs(Array(9).fill(diagnosticWindow), 103), /Too many/);
+$.CGPreflightScreenCaptureAccess = () => false;
+$.CGWindowListCopyWindowInfo = () => { throw new Error('Must not query windows without existing capture access'); };
+assert.equal(run(['diagnostic-window-ids', appPath, '103']), '');
+$.NSProcessInfo.processInfo.environment.objectForKey = () => undefined;
+assert.throws(() => run(['diagnostic-window-ids', appPath, '103']), /isolated hosted runner/);
+console.log('Window diagnostics are nonprompting, hosted-only and limited to exact-PID visible application windows.');

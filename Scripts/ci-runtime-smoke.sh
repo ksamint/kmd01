@@ -29,4 +29,5 @@ ditto -x -k kmd-release.zip runtime-app
 test "$(/usr/libexec/PlistBuddy -c 'Print :KSAMINTBuildCommit' "$app/Contents/Info.plist")" = "$(cat commit.txt)"
 codesign --verify --deep --strict "$app"
 # Hosted runners provide a fresh user account; never run this against a developer's data.
-"$GITHUB_WORKSPACE/Scripts/test-document-open-smoke.sh" "$app" 2>&1 | tee runtime.log
+CI_SMOKE_EVIDENCE_DIR="$evidence" \
+  "$GITHUB_WORKSPACE/Scripts/test-document-open-smoke.sh" "$app" 2>&1 | tee runtime.log

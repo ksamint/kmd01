@@ -61,6 +61,16 @@ capture_failure() {
     ps -p "$app_pid,$2" -o pid,ppid,stat,etime,comm >&2 || true
     diagnostic_command osascript -l JavaScript "$smoke_script" pid "$app" > "$temporary/diagnostic-pid.log" 2>&1
     if [ "$(cat "$temporary/diagnostic-pid.log")" = "$app_pid" ]; then
+      if [ -n "${CI_SMOKE_EVIDENCE_DIR:-}" ] && [ -d "$CI_SMOKE_EVIDENCE_DIR" ]; then
+        diagnostic_command osascript -l JavaScript "$smoke_script" diagnostic-window-ids "$app" "$app_pid" \
+          > "$temporary/window-ids" 2>"$CI_SMOKE_EVIDENCE_DIR/window-capture.log"
+        while IFS= read -r window_id; do
+          case "$window_id" in ''|*[!0-9]*) continue ;; esac
+          diagnostic_command screencapture -x -o -l "$window_id" \
+            "$CI_SMOKE_EVIDENCE_DIR/window-$app_pid-$window_id.png" \
+            >>"$CI_SMOKE_EVIDENCE_DIR/window-capture.log" 2>&1
+        done < "$temporary/window-ids"
+      fi
       diagnostic_command sample "$app_pid" 2 10 -file "$temporary/app-sample.log" >/dev/null 2>&1
     fi
   fi
@@ -68,7 +78,7 @@ capture_failure() {
     diagnostic_command sample "$2" 2 10 -file "$temporary/osascript-sample.log" >/dev/null 2>&1
   fi
   diagnostic_command /usr/bin/log show --last 2m --style compact --info \
-    --predicate "(processIdentifier == ${app_pid:-0} AND processImagePath == '$executable') OR (process == 'tccd' AND eventMessage CONTAINS 'art.apuch.ksamint.markedit')" \
+    --predicate "processIdentifier == ${app_pid:-0} AND processImagePath == '$executable'" \
     > "$temporary/automation.log" 2>&1
   for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"; do
     [ -f "$diagnostic" ] || continue
@@ -134,7 +144,7 @@ cleanup() {
   fi
   rm -f "$fixture" "$temporary/saved.md" "$temporary/restoration-error.log"
   rm -f "$temporary/diagnostics-captured" "$temporary/diagnostic-pid.log" \
-    "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"
+    "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log" "$temporary/window-ids"
   rmdir "$temporary" 2>/dev/null || true
   exit "$result"
 }

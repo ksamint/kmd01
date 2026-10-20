@@ -280,6 +280,8 @@ jobs:
             ${{ runner.temp }}/cross-runtime/**/commit.txt
             ${{ runner.temp }}/cross-runtime/**/kmd-release.zip.sha256
             ${{ runner.temp }}/cross-runtime/**/diagnostics/*.ips
+            ${{ runner.temp }}/cross-runtime/**/window-*.png
+            ${{ runner.temp }}/cross-runtime/**/window-capture.log
           if-no-files-found: error
           retention-days: 14
 

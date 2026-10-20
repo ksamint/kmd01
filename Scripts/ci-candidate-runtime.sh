@@ -77,7 +77,8 @@ verify_and_run() {
   spctl --assess --type execute -vv "$work/kmd.app"
   # Run protected-main test code against the copied signed app; no repacking,
   # re-signing, staple mutation, installation, or candidate-source execution.
-  Scripts/test-document-open-smoke.sh "$work/kmd.app" > "$work/runtime.log" 2>&1
+  CI_SMOKE_EVIDENCE_DIR="$evidence" \
+    Scripts/test-document-open-smoke.sh "$work/kmd.app" > "$work/runtime.log" 2>&1
   test "$(shasum -a 256 "$dmg" | awk '{print $1}')" = "$EXPECTED_DMG_SHA256"
 }
 verify_and_run > "$work/verification.log" 2>&1
