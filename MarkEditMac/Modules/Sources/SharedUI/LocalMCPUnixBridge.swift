@@ -58,6 +58,7 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
   final class StopFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
+    private var clients = Set<Int32>()
 
     var isSet: Bool {
       lock.lock()
@@ -65,9 +66,27 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
       return value
     }
 
+    func insert(_ client: Int32) -> Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      guard !value, clients.count < 8 else { return false }
+      clients.insert(client)
+      return true
+    }
+
+    func close(_ client: Int32) {
+      lock.lock()
+      defer { lock.unlock() }
+      clients.remove(client)
+      Darwin.close(client)
+    }
+
     func set() {
       lock.lock()
       value = true
+      for client in clients {
+        Darwin.shutdown(client, SHUT_RDWR)
+      }
       lock.unlock()
     }
   }
@@ -91,6 +110,10 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
       withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700]
     )
+    var started = false
+    defer {
+      if !started { try? FileManager.default.removeItem(at: runtimeDirectory) }
+    }
     let capability = Self.randomCapability()
     let capabilityFileURL = runtimeDirectory.appending(path: "capability", directoryHint: .notDirectory)
     try Data(capability.utf8).write(to: capabilityFileURL, options: [.atomic, .completeFileProtection])
@@ -101,7 +124,7 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
 
     let socketPath = "/tmp/ksamint-agent-\(getuid())-\(UUID().uuidString.prefix(12)).sock"
     let listener = try SocketIO.listen(path: socketPath)
-    return LocalMCPUnixServer(
+    let bridge = LocalMCPUnixServer(
       listener: listener,
       socketPath: socketPath,
       capabilityFileURL: capabilityFileURL,
@@ -109,6 +132,8 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
       server: server,
       runtimeDirectory: runtimeDirectory
     )
+    started = true
+    return bridge
   }
 
   private init(
@@ -147,6 +172,7 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
     server: LocalMCPServer,
     stopFlag: StopFlag
   ) {
+    defer { Darwin.close(listener) }
     while !stopFlag.isSet {
       var readiness = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
       let ready = Darwin.poll(&readiness, 1, 250)
@@ -172,12 +198,19 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
         }
         break
       }
-      SocketIO.disableSIGPIPE(client)
+      guard stopFlag.insert(client) else {
+        Darwin.close(client)
+        continue
+      }
+      guard SocketIO.configure(client) else {
+        stopFlag.close(client)
+        continue
+      }
       let connection = Thread {
         defer {
-          Darwin.close(client)
+          stopFlag.close(client)
         }
-        try? Self.serve(client: client, capability: capability, server: server)
+        try? Self.serve(client: client, capability: capability, server: server, stopFlag: stopFlag)
       }
       connection.name = "kmd.mcp.connection"
       connection.qualityOfService = .utility
@@ -198,8 +231,7 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
     stopped = true
     stateLock.unlock()
     stopFlag.set()
-    Darwin.shutdown(listener, SHUT_RDWR)
-    Darwin.close(listener)
+    // The accept thread owns close, preventing descriptor reuse while it is polling.
     Darwin.unlink(connectionInfo.socketPath)
     try? FileManager.default.removeItem(at: runtimeDirectory)
   }
@@ -253,18 +285,24 @@ private extension LocalMCPUnixServer {
 
   /// Runs on a dedicated connection thread; blocking here is intentional and
   /// keeps the socket loop off the cooperative pool.
-  static func response(for request: Data, server: LocalMCPServer) -> Data {
+  static func response(for request: Data, server: LocalMCPServer, stopFlag: StopFlag) throws -> Data {
     let box = ResponseBox()
     let semaphore = DispatchSemaphore(value: 0)
-    Task {
+    let task = Task {
       box.value = await server.responseData(for: request)
       semaphore.signal()
     }
-    semaphore.wait()
+    let deadline = DispatchTime.now() + 30
+    while semaphore.wait(timeout: .now() + .milliseconds(250)) != .success {
+      if stopFlag.isSet || DispatchTime.now() >= deadline {
+        task.cancel()
+        throw BridgeError.disconnected
+      }
+    }
     return box.value
   }
 
-  static func serve(client: Int32, capability: String, server: LocalMCPServer) throws {
+  static func serve(client: Int32, capability: String, server: LocalMCPServer, stopFlag: StopFlag) throws {
     var input = Data()
     guard let authData = try SocketIO.readLine(
       from: client,
@@ -276,12 +314,15 @@ private extension LocalMCPUnixServer {
       throw BridgeError.authenticationFailed
     }
 
+    // Authenticated sessions may remain idle between user prompts; stop() wakes them.
+    var idleTimeout = timeval(tv_sec: 0, tv_usec: 0)
+    _ = Darwin.setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &idleTimeout, socklen_t(MemoryLayout<timeval>.size))
     while let request = try SocketIO.readLine(
       from: client,
       buffer: &input,
       maximumBytes: maximumRequestBytes
     ) {
-      let response = Self.response(for: request, server: server)
+      let response = try Self.response(for: request, server: server, stopFlag: stopFlag)
       guard response.count <= maximumResponseBytes else {
         throw BridgeError.messageTooLarge
       }
@@ -332,7 +373,11 @@ private enum SocketIO {
     guard descriptor >= 0 else {
       throw LocalMCPUnixServer.BridgeError.socketFailure("be created")
     }
-    var address = try unixAddress(path: path)
+    let addressValue = try? unixAddress(path: path)
+    guard var address = addressValue else {
+      Darwin.close(descriptor)
+      throw LocalMCPUnixServer.BridgeError.invalidSocketPath
+    }
     let result = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
         Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -342,21 +387,28 @@ private enum SocketIO {
       Darwin.close(descriptor)
       throw LocalMCPUnixServer.BridgeError.socketFailure("connect")
     }
-    disableSIGPIPE(descriptor)
+    guard configure(descriptor) else {
+      Darwin.close(descriptor)
+      throw LocalMCPUnixServer.BridgeError.disconnected
+    }
     return descriptor
   }
 
   /// Writes to a peer that has gone away must fail with EPIPE, not kill the
   /// process; `Application.main` also ignores SIGPIPE globally.
-  static func disableSIGPIPE(_ descriptor: Int32) {
+  static func configure(_ descriptor: Int32) -> Bool {
+    var timeout = timeval(tv_sec: 30, tv_usec: 0)
+    for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
+      _ = Darwin.setsockopt(descriptor, SOL_SOCKET, option, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
     var enabled: Int32 = 1
-    _ = Darwin.setsockopt(
+    return Darwin.setsockopt(
       descriptor,
       SOL_SOCKET,
       SO_NOSIGPIPE,
       &enabled,
       socklen_t(MemoryLayout<Int32>.size)
-    )
+    ) == 0
   }
 
   static func readLine(
@@ -366,7 +418,7 @@ private enum SocketIO {
   ) throws -> Data? {
     while true {
       if let newline = buffer.firstIndex(of: 0x0A) {
-        guard newline <= maximumBytes else {
+        guard buffer.distance(from: buffer.startIndex, to: newline) <= maximumBytes else {
           throw LocalMCPUnixServer.BridgeError.messageTooLarge
         }
         let line = buffer[..<newline]
@@ -379,7 +431,9 @@ private enum SocketIO {
       var bytes = [UInt8](repeating: 0, count: 64 * 1024)
       let count = Darwin.read(descriptor, &bytes, bytes.count)
       if count == 0 {
-        return buffer.isEmpty ? nil : Data(buffer)
+        let lastLine = buffer.isEmpty ? nil : Data(buffer)
+        buffer.removeAll()
+        return lastLine
       }
       if count < 0 {
         if errno == EINTR {
@@ -401,8 +455,8 @@ private enum SocketIO {
       var remaining = rawBuffer.count
       while remaining > 0 {
         let count = Darwin.write(descriptor, base, remaining)
-        if count < 0 {
-          if errno == EINTR {
+        if count <= 0 {
+          if count < 0, errno == EINTR {
             continue
           }
           throw LocalMCPUnixServer.BridgeError.disconnected
