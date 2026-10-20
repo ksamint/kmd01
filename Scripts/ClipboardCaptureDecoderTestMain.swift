@@ -7,7 +7,7 @@ private enum ClipboardCaptureDecoderTestError: Error {
 
 @main
 private enum ClipboardCaptureDecoderTestMain {
-  static func main() throws {
+  static func main() async throws {
     let privateResourceHTML = Data(
       """
       <html><body>
@@ -45,6 +45,16 @@ private enum ClipboardCaptureDecoderTestMain {
     )
     try expect(htmlOnly.content == "Bonjour & 你好\n日本語", "extracts multilingual HTML text offline")
     try expect(!htmlOnly.content.contains("secret"), "drops script contents")
+
+    let malformedHTML = await Task.detached {
+      ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
+        plainText: nil,
+        html: Data("<p>Keep &#x1F680; &#169; &amp;</p><script src='https://example.invalid/payload'>unclosed".utf8),
+        rtf: nil,
+        fileURLs: []
+      ))
+    }.value
+    try expect(malformedHTML?.content == "Keep 🚀 © &", "decodes malformed HTML on a background executor without rendering resources")
 
     let home = FileManager.default.homeDirectoryForCurrentUser
     let privateContainer = home.appending(

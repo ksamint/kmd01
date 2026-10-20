@@ -1,5 +1,6 @@
 import AppKit
 import Security
+import SharedUI
 import UniformTypeIdentifiers
 
 enum QuickActionKind: String, Codable {
@@ -465,7 +466,8 @@ actor FormatConversionService: ConversionProvider {
       let output = plan.outputDirectory.appending(
         path: "\((url.lastPathComponent as NSString).deletingPathExtension).md"
       )
-      let content = try localMarkdown(url)
+      let content = try await localMarkdown(url)
+      if cancelled.contains(plan.request.id) { throw CancellationError() }
       try Data(content.utf8).write(to: output, options: .atomic)
       outputs.append(output)
       progress(Double(index + 1) / Double(plan.supported.count))
@@ -475,7 +477,7 @@ actor FormatConversionService: ConversionProvider {
 
   func cancel(jobID: UUID) async { cancelled.insert(jobID) }
 
-  private func localMarkdown(_ url: URL) throws -> String {
+  private func localMarkdown(_ url: URL) async throws -> String {
     if url.hasDirectoryPath {
       let children = try FileManager.default.contentsOfDirectory(
         at: url,
@@ -488,45 +490,30 @@ actor FormatConversionService: ConversionProvider {
     }
     let ext = url.pathExtension.lowercased()
     if ext == "zip" {
-      return try archiveManifest(url, executable: "/usr/bin/zipinfo", arguments: ["-1"])
+      return try await archiveManifest(url, executable: "/usr/bin/zipinfo", arguments: ["-1"])
     }
     if ["tar", "tgz"].contains(ext) {
-      return try archiveManifest(url, executable: "/usr/bin/tar", arguments: ["-tf"])
+      return try await archiveManifest(url, executable: "/usr/bin/tar", arguments: ["-tf"])
     }
     let text = try String(contentsOf: url, encoding: .utf8)
     if ["md", "markdown", "txt"].contains(ext) { return text }
     if ["html", "htm"].contains(ext) {
-      guard
-        let attributed = try? NSAttributedString(
-          data: Data(text.utf8),
-          options: [.documentType: NSAttributedString.DocumentType.html],
-          documentAttributes: nil
-        )
-      else { return text }
-      return attributed.string
+      return ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
+        plainText: nil, html: Data(text.utf8), rtf: nil, fileURLs: []
+      ))?.content ?? text
     }
     return "# \(url.lastPathComponent)\n\n```\(ext)\n\(text)\n```\n"
   }
 
-  private func archiveManifest(_ url: URL, executable: String, arguments: [String]) throws -> String {
-    let process = Process()
-    let output = Pipe()
-    let errors = Pipe()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments + [url.path]
-    process.standardOutput = output
-    process.standardError = errors
-    try process.run()
-    // Drain stdout before waiting: a listing larger than the pipe buffer
-    // (a few thousand entries) would otherwise block the child forever while
-    // we wait for it to exit. Diagnostics on stderr stay small.
-    let listingData = output.fileHandleForReading.readDataToEndOfFile()
-    let errorData = errors.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-      let detail = String(data: errorData, encoding: .utf8)
-      throw QuickActionError.archiveListing(detail ?? "Archive listing failed")
+  private func archiveManifest(_ url: URL, executable: String, arguments: [String]) async throws -> String {
+    let output = try await ProcessOutput.run(
+      executableURL: URL(fileURLWithPath: executable), arguments: arguments + [url.path]
+    )
+    guard output.status == 0 else {
+      let detail = String(data: output.standardError, encoding: .utf8)
+      throw QuickActionError.archiveListing(detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Archive listing failed")
     }
+    let listingData = output.standardOutput
     let listing = String(data: listingData, encoding: .utf8) ?? ""
     let entries = listing.split(whereSeparator: \.isNewline).prefix(200_000)
     return "# \(url.lastPathComponent)\n\n" + entries.map { "- `\($0)`" }.joined(separator: "\n")
