@@ -10,31 +10,29 @@ import FinderSync
 import os.log
 
 final class FinderTools: FIFinderSync {
-  private var securityScopedWorkspaceURLs: [URL] = []
+  private var securityScopedWorkspaceURL: URL?
+  private let workspace = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit")
+    .map { WorkspaceBookmarkReceiver(shared: $0) }
 
   override init() {
     super.init()
-    let defaults = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit")
-    let bookmarks = defaults?.array(forKey: "workspaceBookmarks") as? [Data] ?? []
-    securityScopedWorkspaceURLs = bookmarks.compactMap { bookmark in
-      var stale = false
-      guard
-        let url = try? URL(
-          resolvingBookmarkData: bookmark,
-          options: [.withSecurityScope],
-          relativeTo: nil,
-          bookmarkDataIsStale: &stale
-        ), !stale, url.startAccessingSecurityScopedResource()
-      else { return nil }
-      return url.standardizedFileURL
-    }
-    let fallbackPaths = defaults?.stringArray(forKey: "workspacePaths") ?? []
-    let urls =
-      securityScopedWorkspaceURLs
-      + fallbackPaths.map {
-        URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL
-      }
-    FIFinderSyncController.default().directoryURLs = Set(urls)
+    DistributedNotificationCenter.default().addObserver(
+      self, selector: #selector(refreshWorkspaceGrant),
+      name: WorkspaceBookmarkNotifications.changed, object: nil
+    )
+    refreshWorkspaceGrant()
+    DistributedNotificationCenter.default().post(name: WorkspaceBookmarkNotifications.requested, object: nil)
+  }
+
+  @objc private func refreshWorkspaceGrant() {
+    if let securityScopedWorkspaceURL { securityScopedWorkspaceURL.stopAccessingSecurityScopedResource() }
+    securityScopedWorkspaceURL = workspace?.acquire()
+    FIFinderSyncController.default().directoryURLs = Set([securityScopedWorkspaceURL].compactMap { $0 })
+  }
+
+  deinit {
+    DistributedNotificationCenter.default().removeObserver(self)
+    securityScopedWorkspaceURL?.stopAccessingSecurityScopedResource()
   }
 
   override var toolbarItemName: String {
@@ -132,7 +130,7 @@ extension FinderTools {
         action: WorkspaceQuickAction.allCases[sender.tag],
         resourceBookmarks: try urls.map {
           try $0.bookmarkData(
-            options: [.withSecurityScope],
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
           )

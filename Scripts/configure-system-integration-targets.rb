@@ -147,4 +147,13 @@ main.copy_files_build_phases.select { |phase| phase.name == 'Embed Conversation 
   phase.remove_from_project
 end
 
+shared_group = project.main_group.find_subpath('Shared', false) || project.main_group.new_group('Shared', 'Shared')
+shared_source = shared_group.files.find { |file| file.path == 'WorkspaceBookmarkAccess.swift' }
+shared_source ||= shared_group.new_file('WorkspaceBookmarkAccess.swift')
+[main, helper, quick, project.targets.find { |target| target.name == 'FinderExtension' }].compact.each do |target|
+  unless target.source_build_phase.files_references.include?(shared_source)
+    target.source_build_phase.add_file_reference(shared_source)
+  end
+end
+
 project.save

@@ -75,6 +75,8 @@ private final class ClipboardCaptureService: NSObject {
         rebuildMenu()
       }
     }
+    SharedCaptureSettings.refreshWorkspaceGrant()
+    DistributedNotificationCenter.default().post(name: WorkspaceBookmarkNotifications.requested, object: nil)
     installStatusItem()
     purgeExpired()
     scheduleKnowledgeExport()
@@ -456,7 +458,10 @@ private extension ClipboardCaptureService {
     DistributedNotificationCenter.default().post(name: .captureSettingsChanged, object: nil)
     NSApp.terminate(nil)
   }
-  @objc private func settingsChanged() { if !SharedCaptureSettings.enabled { NSApp.terminate(nil) } }
+  @objc private func settingsChanged() {
+    if !SharedCaptureSettings.enabled { NSApp.terminate(nil); return }
+    SharedCaptureSettings.refreshWorkspaceGrant()
+  }
 
   private func openMainApp(route: String) {
     guard let url = URL(string: "ksamint-markedit://\(route)") else { return }
@@ -481,6 +486,7 @@ private extension ClipboardCaptureService {
   }
 }
 
+@MainActor
 private enum SharedCaptureSettings {
   private static var defaults: UserDefaults {
     UserDefaults(suiteName: appGroup) ?? .standard
@@ -489,12 +495,11 @@ private enum SharedCaptureSettings {
     get { defaults.bool(forKey: "conversationCaptureEnabled") }
     set { defaults.set(newValue, forKey: "conversationCaptureEnabled") }
   }
-  static var workspaceURL: URL? {
-    guard let bookmark = defaults.data(forKey: "workspaceBookmark") else { return nil }
-    var stale = false
-    guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &stale),
-          url.startAccessingSecurityScopedResource() else { return nil }
-    return url.standardizedFileURL
+  private static let workspace = UserDefaults(suiteName: appGroup)
+    .map { WorkspaceBookmarkReceiver(shared: $0) }
+  static var workspaceURL: URL? { workspace?.acquire() }
+  static func refreshWorkspaceGrant() {
+    if let url = workspaceURL { url.stopAccessingSecurityScopedResource() }
   }
   static var pendingDirectory: URL? {
     ClipboardStorageEnvironment.sharedRootURL

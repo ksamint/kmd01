@@ -78,6 +78,22 @@ final class ConversationCaptureCoordinator: NSObject {
   private var isAgentProcess = false
   private let documentCodec = ConversationCaptureDocument()
   private let pendingQueue = ConversationCaptureQueue()
+  private lazy var workspaceGrantPublisher = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit")
+    .map { WorkspaceBookmarkPublisher(shared: $0) }
+
+  override private init() {
+    super.init()
+    DistributedNotificationCenter.default().addObserver(
+      self,
+      selector: #selector(workspaceGrantRequested),
+      name: WorkspaceBookmarkNotifications.requested,
+      object: nil
+    )
+  }
+
+  @objc private func workspaceGrantRequested() {
+    synchronizeHelperConfiguration()
+  }
 
   func configureFromPreferences() {
     synchronizeHelperConfiguration()
@@ -279,10 +295,19 @@ final class ConversationCaptureCoordinator: NSObject {
     var stale = false
     guard let url = try? URL(
       resolvingBookmarkData: bookmark,
-      options: [.withSecurityScope],
+      options: [.withSecurityScope, .withoutUI],
       relativeTo: nil,
       bookmarkDataIsStale: &stale
     ), url.startAccessingSecurityScopedResource() else { return nil }
+    if stale, let refreshed = try? url.bookmarkData(
+      options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil
+    ) {
+      workspaceBookmarkDidRefresh(from: bookmark, to: refreshed)
+      AppPreferences.General.workspaceFolderBookmark = refreshed
+      AppPreferences.General.workspaceFolderBookmarks =
+        AppPreferences.General.workspaceFolderBookmarks.mapValues { $0 == bookmark ? refreshed : $0 }
+      synchronizeHelperConfiguration()
+    }
     return url.standardizedFileURL
   }
 }
@@ -591,6 +616,10 @@ extension ConversationCaptureCoordinator {
     return NSWorkspace.shared.open(helperURL)
   }
 
+  func workspaceBookmarkDidRefresh(from original: Data, to refreshed: Data) {
+    workspaceGrantPublisher?.preserveGeneration(from: original, to: refreshed)
+  }
+
   func synchronizeHelperConfiguration() {
     guard let defaults = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit") else { return }
     defaults.set(AppPreferences.General.conversationCaptureEnabled, forKey: "conversationCaptureEnabled")
@@ -598,26 +627,12 @@ extension ConversationCaptureCoordinator {
       AppPreferences.General.conversationCaptureSyncInterval.rawValue,
       forKey: "conversationCaptureSyncInterval"
     )
-    defaults.set(AppPreferences.General.workspaceFolderBookmark, forKey: "workspaceBookmark")
-    var paths = Set<String>()
-    if let bookmark = AppPreferences.General.workspaceFolderBookmark {
-      var stale = false
-      if let url = try? URL(
-        resolvingBookmarkData: bookmark,
-        options: [.withSecurityScope],
-        relativeTo: nil,
-        bookmarkDataIsStale: &stale
-      ) {
-        paths.insert(url.standardizedFileURL.path)
-      }
+    let bookmark = AppPreferences.General.workspaceFolderBookmark
+    if let refreshed = workspaceGrantPublisher?.publish(bookmark), refreshed != bookmark {
+      AppPreferences.General.workspaceFolderBookmark = refreshed
+      AppPreferences.General.workspaceFolderBookmarks =
+        AppPreferences.General.workspaceFolderBookmarks.mapValues { $0 == bookmark ? refreshed : $0 }
     }
-    defaults.set(paths.sorted(), forKey: "workspacePaths")
-    // The helper and Finder extension are intentionally scoped to the single
-    // authorized workspace root, never every document bookmark the app knows.
-    defaults.set(
-      [AppPreferences.General.workspaceFolderBookmark].compactMap { $0 },
-      forKey: "workspaceBookmarks"
-    )
     DistributedNotificationCenter.default().post(name: .captureSettingsChanged, object: nil)
   }
 

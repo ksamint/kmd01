@@ -36,17 +36,31 @@ final class QuickActionCoordinator {
         from: Data(contentsOf: requestURL)
       )
       guard request.version == 1, request.id == id,
-        Date().timeIntervalSince(request.createdAt) < 10 * 60
+        (0 ..< 10 * 60).contains(Date().timeIntervalSince(request.createdAt))
       else {
         throw QuickActionError.invalidRequest
       }
-      let urls = try request.resourceBookmarks.map(resolve)
+      var urls: [URL] = []
+      var releaseScopesOnReturn = true
       defer {
-        for url in urls {
-          url.stopAccessingSecurityScopedResource()
+        if releaseScopesOnReturn {
+          for url in urls { url.stopAccessingSecurityScopedResource() }
         }
         try? FileManager.default.removeItem(at: requestURL)
       }
+      for bookmark in request.resourceBookmarks {
+        urls.append(try WorkspaceBookmarkOperations.system.acquire(bookmark, scope: .transfer).url)
+      }
+      switch request.action {
+      case .preview, .openEditor, .analyzeAgent:
+        WorkspaceBookmarkOperations.system.retainForSession(urls, in: &appDelegate.activeResourceSecurityScopes)
+        releaseScopesOnReturn = false
+      default:
+        break
+      }
+      DistributedNotificationCenter.default().post(
+        name: WorkspaceBookmarkNotifications.quickActionReceived, object: id.uuidString
+      )
       try await execute(request.action, urls: urls, appDelegate: appDelegate)
     } catch {
       let alert = NSAlert(error: error)
@@ -202,25 +216,11 @@ final class QuickActionCoordinator {
     return path.count >= rootPath.count && Array(path.prefix(rootPath.count)) == rootPath
   }
 
-  private func resolve(_ bookmark: Data) throws -> URL {
-    var stale = false
-    let url = try URL(
-      resolvingBookmarkData: bookmark,
-      options: [.withSecurityScope],
-      relativeTo: nil,
-      bookmarkDataIsStale: &stale
-    )
-    guard !stale, url.startAccessingSecurityScopedResource() else {
-      throw CocoaError(.fileReadNoPermission)
-    }
-    return url.standardizedFileURL
-  }
-
   private func workspaceRoot() throws -> URL {
     guard let bookmark = AppPreferences.General.workspaceFolderBookmark else {
       throw QuickActionError.noWorkspace
     }
-    return try resolve(bookmark)
+    return try WorkspaceBookmarkOperations.system.acquire(bookmark, scope: .persistent).url
   }
 
   private func pendingDirectory() throws -> URL {

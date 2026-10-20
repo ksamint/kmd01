@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 @objc(QuickActionViewController) final class QuickActionViewController: NSViewController {
   private var inputURLs: [URL] = []
   private var context: NSExtensionContext?
+  private var pendingRequestID: UUID?
+  private var pendingRequestURL: URL?
+  private var handoffTimeout: Timer?
 
   override func loadView() {
     let stack = NSStackView()
@@ -49,6 +52,7 @@ import UniformTypeIdentifiers
       NSSound.beep()
       return
     }
+    guard pendingRequestID == nil else { return }
     do {
       let request = QuickActionRequestV1(
         version: 1,
@@ -57,7 +61,7 @@ import UniformTypeIdentifiers
         action: kind,
         resourceBookmarks: try inputURLs.map {
           try $0.bookmarkData(
-            options: [.withSecurityScope],
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
           )
@@ -79,11 +83,44 @@ import UniformTypeIdentifiers
           string: "ksamint-markedit://quick-action?id=\(request.id)"
         )
       else { throw CocoaError(.fileWriteInvalidFileName) }
-      NSWorkspace.shared.open(callbackURL)
-      context?.completeRequest(returningItems: nil)
+      pendingRequestID = request.id
+      pendingRequestURL = directory.appending(path: "\(request.id).json")
+      DistributedNotificationCenter.default().addObserver(
+        self, selector: #selector(handoffReceived(_:)),
+        name: WorkspaceBookmarkNotifications.quickActionReceived, object: request.id.uuidString
+      )
+      handoffTimeout = Timer.scheduledTimer(timeInterval: 30, target: self,
+        selector: #selector(handoffExpired), userInfo: nil, repeats: false)
+      guard NSWorkspace.shared.open(callbackURL) else {
+        finishHandoff(error: CocoaError(.fileReadNoPermission))
+        return
+      }
     } catch {
       context?.cancelRequest(withError: error)
     }
+  }
+
+  @objc private func handoffReceived(_ notification: Notification) {
+    guard notification.object as? String == pendingRequestID?.uuidString else { return }
+    finishHandoff(error: nil)
+  }
+
+  @objc private func handoffExpired() {
+    finishHandoff(error: CocoaError(.fileReadNoPermission))
+  }
+
+  private func finishHandoff(error: Error?) {
+    handoffTimeout?.invalidate()
+    handoffTimeout = nil
+    DistributedNotificationCenter.default().removeObserver(self, name: WorkspaceBookmarkNotifications.quickActionReceived, object: nil)
+    pendingRequestID = nil
+    if let error {
+      if let pendingRequestURL { try? FileManager.default.removeItem(at: pendingRequestURL) }
+      context?.cancelRequest(withError: error)
+    } else {
+      context?.completeRequest(returningItems: nil)
+    }
+    pendingRequestURL = nil
   }
 }
 

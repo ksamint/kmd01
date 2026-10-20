@@ -189,19 +189,28 @@ final class WorkspaceSession {
     var isStale = false
     let url = try URL(
       resolvingBookmarkData: bookmark,
-      options: [.withSecurityScope],
+      options: [.withSecurityScope, .withoutUI],
       relativeTo: nil,
       bookmarkDataIsStale: &isStale
     )
     let isAuthorized = url.startAccessingSecurityScopedResource()
-    let resolvedBookmark = isStale
-      ? try url.bookmarkData(
+    // Keep the original bookmark when a removable volume or grant is unavailable.
+    let resolvedBookmark = isStale && isAuthorized
+      ? (try? url.bookmarkData(
         options: [.withSecurityScope],
         includingResourceValuesForKeys: nil,
         relativeTo: nil
-      )
+      )) ?? bookmark
       : bookmark
-
+    if resolvedBookmark != bookmark {
+      ConversationCaptureCoordinator.shared.workspaceBookmarkDidRefresh(from: bookmark, to: resolvedBookmark)
+      if AppPreferences.General.workspaceFolderBookmark == bookmark {
+        AppPreferences.General.workspaceFolderBookmark = resolvedBookmark
+      }
+      AppPreferences.General.workspaceFolderBookmarks =
+        AppPreferences.General.workspaceFolderBookmarks.mapValues { $0 == bookmark ? resolvedBookmark : $0 }
+      ConversationCaptureCoordinator.shared.synchronizeHelperConfiguration()
+    }
     return WorkspaceSession(rootURL: url, bookmark: resolvedBookmark, isAuthorized: isAuthorized)
   }
 
