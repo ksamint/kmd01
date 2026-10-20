@@ -40,7 +40,9 @@ Local completed checks (record only actual completed results):
 - AgentSDK: lint, build and **2 tests** passed after targeted Vitest,
   brace-expansion and source-map-js patch updates; audit **0 vulnerabilities**.
 - ResourceModules: **5 signed modules** verified and **10 tests** passed.
-- Cloud: formatting, clippy (`-D warnings`), **19 tests** passed.
+- Cloud: formatting, clippy (`-D warnings`), **19 tests** and strict dependency
+  audit passed after minimal lockfile patches; the pre-existing RSA exception
+  remains unchanged. No protocol or encryption-format changes.
 - Identity: **2.5.6 (19)**; **2716 localized catalog entries** validated.
 - Clipboard decoder/history harness and helper Swift typecheck passed after
   cross-process grant changes. Independent review added stale-refresh generation
@@ -69,6 +71,7 @@ and screenshots (sample/readme content). No Actions artifacts, releases, wiki,
 or discussions existed at review time. The review found no private customer or
 business datasets. Redacted scan evidence is retained locally with mode-restricted
 working files; credentials/profile downloads are never repository artifacts.
+PR implementation: https://github.com/ksamint/kmd01/pull/15.
 
 Repository is now public, Actions enabled, `main` requires a PR and strict
 `Release readiness`, resolved conversations, no force pushes/deletion, enforced
@@ -87,8 +90,10 @@ App Group, match the existing Developer ID certificate, and expire on
 Bundle IDs, Team ID, keychain group and data locations remain unchanged.
 
 The seven signing/notarization secrets are configured in the protected `release`
-environment from the existing controlled credential source. No new signing
-identity was created. Downloaded profiles and credentials remain outside the
+environment from the existing controlled credential source. No new
+Apple signing identity was created. A repository-scoped Homebrew deploy key is configured
+in the same environment for `ksamint/homebrew-ksamint`; temporary private key
+files were removed. Downloaded profiles and credentials remain outside the
 repository. This configuration evidence does not replace verification of the
 final signed bundle or real permission persistence tests.
 
