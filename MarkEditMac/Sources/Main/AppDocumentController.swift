@@ -39,8 +39,8 @@ final class AppDocumentController: NSDocumentController {
   ) throws -> NSDocument {
     // AppKit calls this override on its concurrent document-opening queue when
     // EditorDocument opts into concurrent reads. Swift 6 isolates NSDocument's
-    // initializer to the main actor, so construct the document there while its
-    // read(from:) implementation continues decoding content in the background.
+    // initializer to the main actor, so construct and read the document there
+    // before returning it to AppKit.
     if Thread.isMainThread {
       return try MainActor.assumeIsolated {
         try super.makeDocument(withContentsOf: url, ofType: typeName)

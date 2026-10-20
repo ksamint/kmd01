@@ -34,7 +34,13 @@ final class EditorViewController: NSViewController {
   var userDefinedMenuItems = [EditorMenuItem]()
   var workspaceSession: WorkspaceSession? {
     didSet {
+      if workspaceSession != nil { workspaceRestorationIssue = nil }
       workspaceSidebarView?.session = workspaceSession
+    }
+  }
+  var workspaceRestorationIssue: WorkspaceAccessIssue? {
+    didSet {
+      workspaceSidebarView?.restorationIssue = workspaceRestorationIssue
     }
   }
   var workspaceSidebarView: WorkspaceSidebarView?
@@ -502,14 +508,6 @@ extension EditorViewController {
     bridge.core.setHasModalSheet(value: value)
   }
 
-  func handleFileURLChange() {
-    guard hasBeenEdited else {
-      return
-    }
-
-    bridge.history.markContentClean()
-  }
-
   func ensureWritingToolsSelectionRect() {
     bridge.writingTools.ensureSelectionRect()
   }
@@ -536,5 +534,30 @@ private final class PreloadContinuation {
   func resume() {
     continuation?.resume()
     continuation = nil
+  }
+}
+
+// MARK: - Workspace Access
+
+extension EditorViewController {
+  func restoreWorkspaceSession(_ bookmark: Data, for fileURL: URL?) {
+    do {
+      let session = try WorkspaceSession.restore(from: bookmark)
+      if fileURL.map({ session.contains($0) }) != false {
+        workspaceSession = session
+      }
+    } catch {
+      // Keep the saved bookmark: a missing volume or denied read is not a revocation.
+      workspaceRestorationIssue = WorkspaceAccessIssue.classify(error)
+    }
+  }
+
+  func retryWorkspaceRestoration() {
+    // Acquire the replacement before releasing the old scope; never open a picker here.
+    let fileURL = document?.fileURL
+    let bookmark = fileURL.flatMap {
+      AppPreferences.General.workspaceFolderBookmarks[$0.standardizedFileURL.path]
+    } ?? AppPreferences.General.workspaceFolderBookmark
+    if let bookmark { restoreWorkspaceSession(bookmark, for: fileURL) }
   }
 }

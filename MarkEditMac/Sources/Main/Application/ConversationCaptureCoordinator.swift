@@ -4,9 +4,11 @@ import ServiceManagement
 enum ConversationCaptureServiceState: Equatable {
   case disabled
   case enabled
+  case registered
   case approvalRequired
   case notRegistered
   case unavailable
+  case sharingUnavailable
 
   var localizedDescription: String {
     switch self {
@@ -14,12 +16,16 @@ enum ConversationCaptureServiceState: Equatable {
       String(localized: "Clipboard capture is off")
     case .enabled:
       String(localized: "Clipboard capture is running in the background")
+    case .registered:
+      String(localized: "Clipboard capture is registered and will start at the next login")
     case .approvalRequired:
       String(localized: "Approval is required in System Settings › Login Items")
     case .notRegistered:
       String(localized: "The background helper is not registered")
     case .unavailable:
       String(localized: "Background capture is unavailable on this Mac")
+    case .sharingUnavailable:
+      String(localized: "Capture sharing is unavailable. Check the app installation or access.")
     }
   }
 
@@ -27,11 +33,13 @@ enum ConversationCaptureServiceState: Equatable {
     switch self {
     case .enabled:
       "checkmark.circle.fill"
+    case .registered:
+      "clock.badge.checkmark"
     case .approvalRequired:
       "exclamationmark.triangle.fill"
     case .disabled:
       "pause.circle"
-    case .notRegistered, .unavailable:
+    case .notRegistered, .unavailable, .sharingUnavailable:
       "xmark.circle"
     }
   }
@@ -42,7 +50,7 @@ enum ConversationCaptureServiceState: Equatable {
       .systemGreen
     case .approvalRequired:
       .systemOrange
-    case .disabled, .notRegistered, .unavailable:
+    case .disabled, .registered, .notRegistered, .unavailable, .sharingUnavailable:
       .secondaryLabelColor
     }
   }
@@ -71,8 +79,28 @@ final class ConversationCaptureCoordinator: NSObject {
   private var captureNextCopy = false
   private var lastSavedURL: URL?
   private var isAgentProcess = false
+  private var sharedConfigurationUnavailable = false
+  private var sharedContainerUnavailable = false
   private let documentCodec = ConversationCaptureDocument()
-  private let pendingQueue = ConversationCaptureQueue()
+  private lazy var pendingQueue = ConversationCaptureQueue { [weak self] available in
+    self?.sharedContainerUnavailable = !available
+  }
+  private lazy var workspaceGrantPublisher = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit")
+    .map { WorkspaceBookmarkPublisher(shared: $0) }
+
+  override private init() {
+    super.init()
+    DistributedNotificationCenter.default().addObserver(
+      self,
+      selector: #selector(workspaceGrantRequested),
+      name: WorkspaceBookmarkNotifications.requested,
+      object: nil
+    )
+  }
+
+  @objc private func workspaceGrantRequested() {
+    synchronizeHelperConfiguration()
+  }
 
   func configureFromPreferences() {
     synchronizeHelperConfiguration()
@@ -172,9 +200,11 @@ final class ConversationCaptureCoordinator: NSObject {
   }
 
   private func preferredText(from pasteboard: NSPasteboard) -> String? {
-    let value = attributedClipboardText(from: pasteboard, type: .html, documentType: .html)
+    // Plain text first: importing HTML through WebKit on the main thread is
+    // expensive and happens on every clipboard change while capture is on.
+    let value = pasteboard.string(forType: .string).flatMap { $0.isEmpty ? nil : $0 }
+      ?? attributedClipboardText(from: pasteboard, type: .html, documentType: .html)
       ?? attributedClipboardText(from: pasteboard, type: .rtf, documentType: .rtf)
-      ?? pasteboard.string(forType: .string)
     guard let value, let size = value.data(using: .utf8)?.count,
           size > 0, size <= Self.maximumClipboardBytes else { return nil }
     return value
@@ -272,10 +302,19 @@ final class ConversationCaptureCoordinator: NSObject {
     var stale = false
     guard let url = try? URL(
       resolvingBookmarkData: bookmark,
-      options: [.withSecurityScope],
+      options: [.withSecurityScope, .withoutUI],
       relativeTo: nil,
       bookmarkDataIsStale: &stale
     ), url.startAccessingSecurityScopedResource() else { return nil }
+    if stale, let refreshed = try? url.bookmarkData(
+      options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil
+    ) {
+      workspaceBookmarkDidRefresh(from: bookmark, to: refreshed)
+      AppPreferences.General.workspaceFolderBookmark = refreshed
+      AppPreferences.General.workspaceFolderBookmarks =
+        AppPreferences.General.workspaceFolderBookmarks.mapValues { $0 == bookmark ? refreshed : $0 }
+      synchronizeHelperConfiguration()
+    }
     return url.standardizedFileURL
   }
 }
@@ -283,22 +322,29 @@ final class ConversationCaptureCoordinator: NSObject {
 extension ConversationCaptureCoordinator {
   var serviceState: ConversationCaptureServiceState {
     guard AppPreferences.General.conversationCaptureEnabled else { return .disabled }
+    if sharedConfigurationUnavailable || sharedContainerUnavailable { return .sharingUnavailable }
+    // Distinguish a running helper from a login item that is only registered
+    // for the next login session.
+    if isCaptureHelperRunning { return .enabled }
     // Developer ID/App Store builds use SMAppService. Local ad-hoc `.dev`
     // builds cannot register a login item, but can safely run the embedded
     // helper for the lifetime of the development session.
     if isDevelopmentBuild {
-      return isDevelopmentHelperRunning ? .enabled : .notRegistered
+      return .notRegistered
     }
     guard #available(macOS 13, *) else { return .unavailable }
     switch SMAppService.loginItem(identifier: captureHelperIdentifier).status {
     case .enabled:
-      return .enabled
+      return .registered
     case .requiresApproval:
       return .approvalRequired
     case .notRegistered:
       return .notRegistered
     case .notFound:
-      return .unavailable
+      // The helper is embedded, but macOS has not indexed it for
+      // SMAppService yet. Enabling capture will retry registration and use a
+      // signed session fallback if indexing still has not completed.
+      return .notRegistered
     @unknown default:
       return .unavailable
     }
@@ -511,13 +557,21 @@ extension ConversationCaptureCoordinator {
     }
     guard #available(macOS 13, *) else { return false }
     let service = SMAppService.loginItem(identifier: captureHelperIdentifier)
+    let initialStatus = service.status
     do {
-      if service.status == .notRegistered { try service.register() }
+      switch initialStatus {
+      case .notRegistered, .notFound:
+        try service.register()
+      default:
+        break
+      }
       switch service.status {
       case .enabled:
         return true
       case .requiresApproval:
         showLoginItemApprovalRequired()
+        return false
+      case .notFound:
         return false
       default:
         return false
@@ -528,14 +582,14 @@ extension ConversationCaptureCoordinator {
   }
 
   private func unregisterLoginAgent() {
-    if isDevelopmentBuild {
-      for application in NSRunningApplication.runningApplications(
-        withBundleIdentifier: captureHelperIdentifier
-      ) {
-        application.terminate()
-      }
-      return
+    // Stop both an SMAppService-managed instance and the explicit session
+    // fallback. This keeps the opt-out immediate and privacy preserving.
+    for application in NSRunningApplication.runningApplications(
+      withBundleIdentifier: captureHelperIdentifier
+    ) {
+      application.terminate()
     }
+    if isDevelopmentBuild { return }
     guard #available(macOS 13, *) else { return }
     let service = SMAppService.loginItem(identifier: captureHelperIdentifier)
     try? service.unregister()
@@ -552,7 +606,7 @@ extension ConversationCaptureCoordinator {
     Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true
   }
 
-  private var isDevelopmentHelperRunning: Bool {
+  private var isCaptureHelperRunning: Bool {
     !NSRunningApplication.runningApplications(
       withBundleIdentifier: captureHelperIdentifier
     ).isEmpty
@@ -560,7 +614,7 @@ extension ConversationCaptureCoordinator {
 
   @discardableResult
   private func launchDevelopmentHelper() -> Bool {
-    if isDevelopmentHelperRunning { return true }
+    if isCaptureHelperRunning { return true }
     let helperURL = Bundle.main.bundleURL
       .appending(
         path: "Contents/Library/LoginItems/ConversationCaptureHelper.app",
@@ -570,33 +624,28 @@ extension ConversationCaptureCoordinator {
     return NSWorkspace.shared.open(helperURL)
   }
 
+  func workspaceBookmarkDidRefresh(from original: Data, to refreshed: Data) {
+    workspaceGrantPublisher?.preserveGeneration(from: original, to: refreshed)
+  }
+
   func synchronizeHelperConfiguration() {
-    guard let defaults = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit") else { return }
+    let groupIdentifier = "group.art.apuch.ksamint-markedit"
+    guard let defaults = UserDefaults(suiteName: groupIdentifier) else {
+      sharedConfigurationUnavailable = true
+      return
+    }
+    sharedConfigurationUnavailable = false
     defaults.set(AppPreferences.General.conversationCaptureEnabled, forKey: "conversationCaptureEnabled")
     defaults.set(
       AppPreferences.General.conversationCaptureSyncInterval.rawValue,
       forKey: "conversationCaptureSyncInterval"
     )
-    defaults.set(AppPreferences.General.workspaceFolderBookmark, forKey: "workspaceBookmark")
-    var paths = Set<String>()
-    if let bookmark = AppPreferences.General.workspaceFolderBookmark {
-      var stale = false
-      if let url = try? URL(
-        resolvingBookmarkData: bookmark,
-        options: [.withSecurityScope],
-        relativeTo: nil,
-        bookmarkDataIsStale: &stale
-      ) {
-        paths.insert(url.standardizedFileURL.path)
-      }
+    let bookmark = AppPreferences.General.workspaceFolderBookmark
+    if let refreshed = workspaceGrantPublisher?.publish(bookmark), refreshed != bookmark {
+      AppPreferences.General.workspaceFolderBookmark = refreshed
+      AppPreferences.General.workspaceFolderBookmarks =
+        AppPreferences.General.workspaceFolderBookmarks.mapValues { $0 == bookmark ? refreshed : $0 }
     }
-    defaults.set(paths.sorted(), forKey: "workspacePaths")
-    // The helper and Finder extension are intentionally scoped to the single
-    // authorized workspace root, never every document bookmark the app knows.
-    defaults.set(
-      [AppPreferences.General.workspaceFolderBookmark].compactMap { $0 },
-      forKey: "workspaceBookmarks"
-    )
     DistributedNotificationCenter.default().post(name: .captureSettingsChanged, object: nil)
   }
 

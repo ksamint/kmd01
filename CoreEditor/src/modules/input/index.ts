@@ -221,9 +221,14 @@ export function observeChanges() {
       // and only called when the update is actually sent. The snapshot is intentional:
       // getInfo() is consistent with the other fields captured in this update.
       const lineColumnState = selectedLineColumn();
+      // A debounced notification may be superseded by a selection-only update;
+      // carry the edit flag over so native never misses it.
+      storage.pendingContentEdited = storage.pendingContentEdited || update.docChanged;
       const notifyViewDidUpdate = () => {
+        const contentEdited = storage.pendingContentEdited;
+        storage.pendingContentEdited = false;
         window.nativeModules.core.notifyViewDidUpdate({
-          contentEdited: update.docChanged,
+          contentEdited,
           compositionEnded: editingState.compositionEnded,
           isDirty: isContentDirty(),
           selectedLineColumn: lineColumnState.getInfo(),
@@ -296,9 +301,11 @@ const storage: {
   gutterUpdater: ReturnType<typeof setTimeout> | undefined;
   contentUpdater: ReturnType<typeof setTimeout> | undefined;
   lineColumnUpdater: ReturnType<typeof setTimeout> | undefined;
+  pendingContentEdited: boolean;
 } = {
   caretOffsetY: undefined,
   gutterUpdater: undefined,
   contentUpdater: undefined,
   lineColumnUpdater: undefined,
+  pendingContentEdited: false,
 };

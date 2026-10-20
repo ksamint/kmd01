@@ -18,17 +18,42 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: signed-local-${{ inputs.ref }}
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    name: Verify protected main and exact tested commit
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_REF: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require trusted exact-commit CI
+        id: commit
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_REF" =~ ^[0-9a-f]{40}$ ]]
+          commit="$REQUESTED_REF"
+          python3 Scripts/ci-release-gates.py trusted-build "$commit"
+          printf 'sha=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
   signed-local:
-    runs-on: macos-15
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
     environment: release
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
       APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -40,14 +65,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.preflight.outputs.commit }}
       - name: Verify exact immutable commit
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.ref }}"
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
-      - name: Validate product identity
-        run: node Scripts/validate-product-identity.mjs
+      - name: Validate identity, localizations, and clipboard privacy
+        run: |
+          node Scripts/validate-product-identity.mjs
+          node Scripts/validate-localizations.mjs
+          Scripts/ci-test-clipboard.sh
       - name: Build CoreEditor
         working-directory: CoreEditor
         run: |
@@ -109,17 +139,15 @@ jobs:
               base64 --decode > "$profiles/$uuid.provisionprofile"
             security cms -D -i "$profiles/$uuid.provisionprofile" > /dev/null
           done <<'PROFILES'
-          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID
-          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID
-          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID
+          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID 2.5.6
+          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID 2.5.6
+          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID 2.5.6
           art.apuch.ksamint.markedit.preview-extension|ksamint Preview Extension Developer ID
-          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID
+          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID 2.5.6
           PROFILES
           unset token
       - name: Archive signed app
         run: |
-          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
           test '${{ inputs.architecture }}' = arm64
           xcodebuild archive \
             -project MarkEdit.xcodeproj \
@@ -127,12 +155,10 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/ksamint.xcarchive" \
             -destination 'generic/platform=macOS' \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$key" \
-            -authenticationKeyID "$APPLE_NOTARY_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_NOTARY_ISSUER_ID" \
+            -xcconfig ReleaseSigning.xcconfig \
+            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID_SHA1" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-            KSAMINT_BUILD_COMMIT='${{ inputs.ref }}' \
+            KSAMINT_BUILD_COMMIT='${{ needs.preflight.outputs.commit }}' \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
           plutil -create xml1 "$RUNNER_TEMP/ExportOptions.plist"
           plutil -insert method -string developer-id "$RUNNER_TEMP/ExportOptions.plist"
@@ -144,11 +170,11 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$bundle_id string $profile_name" \
               "$RUNNER_TEMP/ExportOptions.plist"
           done <<'PROFILES'
-          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID
-          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID
-          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID
+          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID 2.5.6
+          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID 2.5.6
+          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID 2.5.6
           art.apuch.ksamint.markedit.preview-extension|ksamint Preview Extension Developer ID
-          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID
+          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID 2.5.6
           PROFILES
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/ksamint.xcarchive" \
@@ -157,6 +183,13 @@ jobs:
           ditto -c -k --keepParent \
             "$RUNNER_TEMP/export/kmd.app" \
             "$RUNNER_TEMP/ksamint-MarkEdit-signed-unstapled.zip"
+      - name: Preserve signed bytes before contacting Apple
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ksamint-MarkEdit-signed-unstapled
+          path: ${{ runner.temp }}/ksamint-MarkEdit-signed-unstapled.zip
+          if-no-files-found: error
+          retention-days: 14
       - name: Notarize, staple, and verify
         run: |
           app="$RUNNER_TEMP/export/kmd.app"
@@ -209,10 +242,20 @@ jobs:
           if echo "$archs" | grep -qw x86_64; then exit 1; fi
           test -d "$app/Contents/Library/LoginItems/ConversationCaptureHelper.app"
           test -d "$app/Contents/PlugIns/QuickActionExtension.appex"
+          Scripts/verify-release-app.sh "$app" "$APPLE_TEAM_ID" '${{ needs.preflight.outputs.commit }}' arm64
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/ksamint-MarkEdit-signed-local.zip"
+          (cd "$RUNNER_TEMP" && shasum -a 256 ksamint-MarkEdit-signed-local.zip > ksamint-MarkEdit-signed-local.zip.sha256)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ksamint-MarkEdit-signed-local
-          path: ${{ runner.temp }}/ksamint-MarkEdit-signed-local.zip
+          path: |
+            ${{ runner.temp }}/ksamint-MarkEdit-signed-local.zip
+            ${{ runner.temp }}/ksamint-MarkEdit-signed-local.zip.sha256
           if-no-files-found: error
           retention-days: 3
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/local-install.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+            "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"

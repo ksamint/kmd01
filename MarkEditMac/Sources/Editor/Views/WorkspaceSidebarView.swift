@@ -14,6 +14,7 @@ import SharedUI
 final class WorkspaceSidebarView: NSView {
   var onModeSelected: ((WorkspaceSidebarMode) -> Void)?
   var onChooseWorkspace: (() -> Void)?
+  var onRetryWorkspace: (() -> Void)?
   var onOpenResult: ((URL, Int?) -> Void)?
   var onCreateFile: ((URL) -> Void)?
   var onCreateFolder: ((URL) -> Void)?
@@ -44,6 +45,12 @@ final class WorkspaceSidebarView: NSView {
 
   var session: WorkspaceSession? {
     didSet {
+      // Re-binding the same session (sidebar toggles, tab binding, opening a
+      // file from the tree) must not reload the tree or re-index the workspace.
+      guard session !== oldValue else {
+        return
+      }
+
       session?.onFileSystemChange = { [weak self] in
         self?.reloadTree()
         self?.reloadTaxonomy()
@@ -59,6 +66,15 @@ final class WorkspaceSidebarView: NSView {
     }
   }
 
+  var restorationIssue: WorkspaceAccessIssue? {
+    didSet { updateAuthorizationState() }
+  }
+
+  private var accessIssue: WorkspaceAccessIssue? {
+    restorationIssue ?? session?.accessIssue
+  }
+
+  private var fileIconCache = [String: NSImage]()
   private let modeControl = NSSegmentedControl()
   private let documentOutlineContainer = NSView()
   private let documentOutlineView = DocumentOutlineView()
@@ -561,14 +577,21 @@ private extension WorkspaceSidebarView {
 
   func updateAuthorizationState() {
     let hasSession = session != nil
-    let isAuthorized = session?.isAuthorized == true
+    let isAuthorized = session?.isAuthorized == true && accessIssue == nil
 
-    authorizationLabel.stringValue = hasSession
-      ? Localized.Workspace.authorizationExpired
-      : Localized.Workspace.noFolderDescription
-    authorizeButton.title = hasSession
+    authorizationLabel.stringValue = accessIssue.map(Localized.Workspace.accessIssue)
+      ?? Localized.Workspace.noFolderDescription
+    authorizeButton.title = accessIssue == .permissionRequired
       ? Localized.Workspace.reauthorize
-      : Localized.Workspace.openFolder
+      : accessIssue != nil ? Localized.Workspace.retryAccess : Localized.Workspace.openFolder
+    authorizeButton.action = accessIssue != nil && accessIssue != .permissionRequired
+      ? #selector(retryWorkspace(_:)) : #selector(chooseWorkspace(_:))
+    if let accessIssue {
+      searchStatusLabel.stringValue = Localized.Workspace.accessIssue(accessIssue)
+      taxonomyStatusLabel.stringValue = Localized.Workspace.accessIssue(accessIssue)
+    } else if !hasSession {
+      searchStatusLabel.stringValue = ""
+    }
 
     authorizationLabel.isHidden = isAuthorized
     authorizeButton.isHidden = isAuthorized
@@ -582,6 +605,8 @@ private extension WorkspaceSidebarView {
   }
 
   func updateIndexState(_ state: WorkspaceIndexState) {
+    updateAuthorizationState()
+    guard accessIssue == nil else { return }
     switch state {
     case .idle:
       searchStatusLabel.stringValue = ""
@@ -611,7 +636,7 @@ private extension WorkspaceSidebarView {
         $0.displayName.localizedCaseInsensitiveContains(filter)
       }
     taxonomyTableView.reloadData()
-    taxonomyStatusLabel.stringValue = String(
+    taxonomyStatusLabel.stringValue = accessIssue.map(Localized.Workspace.accessIssue) ?? String(
       format: Localized.Workspace.metadataCountFormat,
       taxonomyItems.count
     )
@@ -659,6 +684,10 @@ private extension WorkspaceSidebarView {
 
   @objc func chooseWorkspace(_ sender: Any?) {
     onChooseWorkspace?()
+  }
+
+  @objc func retryWorkspace(_ sender: Any?) {
+    onRetryWorkspace?()
   }
 
   @objc func refresh(_ sender: Any?) {
@@ -913,7 +942,11 @@ extension WorkspaceSidebarView: NSOutlineViewDataSource, NSOutlineViewDelegate {
       return node.children(showHiddenFiles: AppPreferences.General.showHiddenFiles).count
     }
 
-    return rootNode?.children(showHiddenFiles: AppPreferences.General.showHiddenFiles).count ?? 0
+    let children = rootNode?.children(showHiddenFiles: AppPreferences.General.showHiddenFiles) ?? []
+    if let error = rootNode?.accessError {
+      session?.recordAccessFailure(error)
+    }
+    return children.count
   }
 
   func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
@@ -944,9 +977,21 @@ extension WorkspaceSidebarView: NSOutlineViewDataSource, NSOutlineViewDelegate {
       ?? makeFileCell(identifier: identifier)
 
     cell.textField?.stringValue = node.url.lastPathComponent
-    cell.imageView?.image = NSWorkspace.shared.icon(forFile: node.url.path)
+    cell.imageView?.image = fileIcon(for: node)
     cell.toolTip = node.url.path
     return cell
+  }
+
+  /// `NSWorkspace.icon(forFile:)` is a LaunchServices lookup per call; rows
+  /// are re-created on every tree reload, so cache by kind and extension.
+  private func fileIcon(for node: WorkspaceTreeNode) -> NSImage {
+    let key = node.isDirectory ? "\u{0}directory" : node.url.pathExtension.lowercased()
+    if let cached = fileIconCache[key] {
+      return cached
+    }
+    let icon = NSWorkspace.shared.icon(forFile: node.url.path)
+    fileIconCache[key] = icon
+    return icon
   }
 
   func outlineView(

@@ -10,6 +10,7 @@ import MarkEditKit
 import SharedUI
 import FileVersion
 import TextBundle
+import WebKit
 
 /**
  Main document used to deal with markdown files and text bundles.
@@ -77,6 +78,9 @@ final class EditorDocument: NSDocument {
     AppRuntimeConfig.autoSaveWhenIdle && fileURL != nil
   }
 
+  private var saveTask: Task<Bool, Never>?
+  private var pendingSaveCompletion: DocumentSaveCompletion?
+  private var pendingCloseCompletions: [UUID: DocumentSaveCompletion] = [:]
   private var autosaveDelayedTask: Task<Void, Never>?
   private var textBundle: TextBundleWrapper?
   private var revertedDate: Date = .distantPast
@@ -134,41 +138,16 @@ final class EditorDocument: NSDocument {
     #endif
   }
 
-  func waitUntilSaveCompleted(userInitiated: Bool = false, delay: TimeInterval = 0.6) async {
+  func waitUntilSaveCompleted(userInitiated: Bool = false) async -> Bool {
     await withCheckedContinuation { continuation in
-      saveContent(userInitiated: userInitiated) {
-        continuation.resume()
-      }
-    }
-
-    // It takes sometime to actually save the document
-    await withCheckedContinuation { continuation in
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-        continuation.resume()
+      saveContent(userInitiated: userInitiated) { saved in
+        continuation.resume(returning: saved)
       }
     }
   }
 
-  func saveContent(sender: Any? = nil, userInitiated: Bool = false, completion: (() -> Void)? = nil) {
-    Task { @MainActor in
-      let saveAction = {
-        super.save(sender)
-        if let fileURL = self.fileURL {
-          ActivityHistoryStore.shared.record(.saved, url: fileURL)
-        }
-        completion?()
-      }
-
-      if isOutdated || (userInitiated && needsFormatting) {
-        updateContent(userInitiated: userInitiated, saveAction: saveAction)
-      } else {
-        saveAction()
-
-        if userInitiated {
-          markContentClean()
-        }
-      }
-    }
+  func saveContent(sender: Any? = nil, userInitiated: Bool = false, completion: ((Bool) -> Void)? = nil) {
+    enqueueSave(userInitiated: userInitiated, saveAs: false, completion: completion)
   }
 
   func autosaveDelayed(seconds: Double = 0.25) {
@@ -181,10 +160,14 @@ final class EditorDocument: NSDocument {
     }
   }
 
-  func updateContent(userInitiated: Bool = false, saveAction: @escaping (() -> Void) = {}) {
+  func updateContent(userInitiated: Bool = false) {
     Task { @MainActor in
-      await updateContent(userInitiated: userInitiated)
-      saveAction()
+      do {
+        try await refreshContent(userInitiated: userInitiated)
+      } catch {
+        // Idle synchronization must retain dirty state without opening an error panel.
+        Logger.log(.error, "Failed to synchronize editor content: \(error)")
+      }
     }
   }
 
@@ -237,7 +220,12 @@ extension EditorDocument {
   }
 
   override class func canConcurrentlyReadDocuments(ofType type: String) -> Bool {
-    true
+    // Concurrent reads let AppKit construct and read the document on its
+    // document-opening queue (window restoration and autosaved drafts take a
+    // path AppDocumentController does not hop to main), where the main-actor
+    // overrides below trap under Swift 6. Reads must also finish populating the
+    // document before returning, so immediate saves cannot write empty content.
+    false
   }
 
   override var fileURL: URL? {
@@ -246,25 +234,12 @@ extension EditorDocument {
     }
     set {
       let previousURL = super.fileURL
-      let wasDraft = super.fileURL == nil && newValue != nil
       super.fileURL = newValue
 
       if let previousURL, let newValue,
          previousURL.standardizedFileURL != newValue.standardizedFileURL {
         Task { @MainActor in
           ActivityHistoryStore.shared.record(.renamed, url: newValue)
-        }
-      } else if wasDraft, let newValue {
-        Task { @MainActor in
-          ActivityHistoryStore.shared.record(.saved, url: newValue)
-        }
-      }
-
-      // Newly created files should have a clean state
-      if wasDraft {
-        Task { @MainActor in
-          markContentDirty(false)
-          hostViewController?.handleFileURLChange()
         }
       }
     }
@@ -284,11 +259,6 @@ extension EditorDocument {
     }
   }
 
-  override func updateChangeCount(_ change: NSDocument.ChangeType) {
-    // The "Edited" label is hidden when changes are saved periodically
-    super.updateChangeCount(shouldSaveWhenIdle ? .changeCleared : change)
-  }
-
   override func canAsynchronouslyWrite(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType) -> Bool {
     // EditorDocument owns AppKit and WebKit state isolated to the main actor.
     // Advertising concurrent writes lets NSDocument call these overrides from a
@@ -297,46 +267,47 @@ extension EditorDocument {
   }
 
   override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
-    let isNewFile = fileURL == nil
-    let shouldClose: Selector? = {
-      if !isNewFile && !isTerminating && closeAlwaysConfirmsChanges {
-        return #selector(confirmsChanges(_:shouldClose:))
-      }
-
-      return shouldCloseSelector
-    }()
-
-    let canClose = {
-      super.canClose(
-        withDelegate: delegate,
-        shouldClose: shouldClose,
-        contextInfo: contextInfo
-      )
-    }
-
-    // Closing a new document, force sync to make sure the content is propagated.
-    //
-    // Don't use `isDraft` here because it's false when closing a document with no files on disk.
-    if isNewFile {
-      return updateContent(saveAction: canClose)
-    }
-
-    // Explicitly save the content before closing.
-    //
-    // Case 1: The content isn't outdated, so auto-saving won't trigger.
-    // Case 2: Occasionally, the ".sb" backup file isn't properly cleaned up.
-    if (shouldSaveWhenIdle && isOutdated) || (!closeAlwaysConfirmsChanges && isDocumentEdited) {
-      return saveContent(completion: canClose)
-    }
-
-    // General cases
+    // AppKit's close decision must see the latest editor content. In particular,
+    // a failed refresh must not turn an edited draft into an empty saved file.
     Task { @MainActor in
-      canClose()
+      do {
+        if isOutdated {
+          try await refreshContent()
+        }
+        if (shouldSaveWhenIdle || !closeAlwaysConfirmsChanges) && fileURL != nil && isDocumentEdited {
+          guard await waitUntilSaveCompleted() else {
+            cancelTermination()
+            notifyDocumentDelegate(delegate, selector: shouldCloseSelector, result: false, contextInfo: contextInfo)
+            return
+          }
+        }
+        let identifier = UUID()
+        let callback = DocumentSaveCompletion { [self] shouldClose in
+          pendingCloseCompletions[identifier] = nil
+          if !shouldClose {
+            cancelTermination()
+          }
+          notifyDocumentDelegate(delegate, selector: shouldCloseSelector, result: shouldClose, contextInfo: contextInfo)
+        }
+        pendingCloseCompletions[identifier] = callback
+        super.canClose(
+          withDelegate: callback,
+          shouldClose: #selector(DocumentSaveCompletion.document(_:didSave:contextInfo:)),
+          contextInfo: nil
+        )
+      } catch {
+        cancelTermination()
+        presentError(error)
+        notifyDocumentDelegate(delegate, selector: shouldCloseSelector, result: false, contextInfo: contextInfo)
+      }
     }
   }
 
   override func close() {
+    autosaveDelayedTask?.cancel()
+    autosaveDelayedTask = nil
     saveToClosedTabHistory()
+    windowControllers.forEach { $0.window?.isReleasedWhenClosed = true }
     super.close()
 
     if let spellDocTag {
@@ -399,45 +370,39 @@ extension EditorDocument {
 
 extension EditorDocument {
   override func read(from data: Data, ofType typeName: String) throws {
-    let suggestedEncoding = MainActor.assumeIsolated {
-      AppDocumentController.suggestedTextEncoding
-    }
-    let defaultEncoding = MainActor.assumeIsolated {
-      AppPreferences.General.defaultTextEncoding
-    }
-    DispatchQueue.global(qos: .userInitiated).async {
-      let newValue = {
-        if let encoding = suggestedEncoding {
-          return encoding.decode(data: data)
-        }
-
-        return defaultEncoding.decode(data: data, guessEncoding: true)
-      }()
-
-      DispatchQueue.main.async {
-        self.fileData = data
-        self.stringValue = newValue
-        self.hostViewController?.representedObject = self
+    // NSDocument may save or restore the document as soon as this returns.
+    // Publishing the decoded state later would let those paths write empty or
+    // stale text, and a late read callback could overwrite an intervening edit.
+    MainActor.assumeIsolated {
+      let newValue: String
+      if let encoding = AppDocumentController.suggestedTextEncoding {
+        newValue = encoding.decode(data: data)
+      } else {
+        newValue = AppPreferences.General.defaultTextEncoding.decode(data: data, guessEncoding: true)
       }
+      fileData = data
+      stringValue = newValue
+      hostViewController?.representedObject = self
     }
   }
 
-  // We don't have a sync way to get the text, override save and autosave to do an async approach.
-  //
-  // Note that, by only overriding the "saveToURL" method can bring hang issues.
   override func save(_ sender: Any?) {
-    guard isOutdated || needsFormatting else {
-      super.save(sender)
-      markContentClean()
-      return
-    }
-
     saveContent(sender: sender, userInitiated: true)
+  }
+
+  override func save(withDelegate delegate: Any?, didSave didSaveSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+    saveContent(userInitiated: true) { saved in
+      self.notifyDocumentDelegate(delegate, selector: didSaveSelector, result: saved, contextInfo: contextInfo)
+    }
+  }
+
+  override func saveAs(_ sender: Any?) {
+    enqueueSave(userInitiated: true, saveAs: true)
   }
 
   override func autosave(withImplicitCancellability implicitlyCancellable: Bool) async throws {
     if isOutdated {
-      await updateContent()
+      try await refreshContent()
     }
 
     // The default autosave doesn't work when the app is about to terminate,
@@ -445,20 +410,16 @@ extension EditorDocument {
     //
     // To work around this, check a flag to save the document manually.
     if !hasBeenReverted && isTerminating && hasUnautosavedChanges, let fileURL, let fileType {
-      try? writeSafely(to: fileURL, ofType: fileType, for: .autosaveAsOperation)
+      try writeSafely(to: fileURL, ofType: fileType, for: .autosaveAsOperation)
       fileModificationDate = .now // Prevent immediate presentedItemDidChange calls
     }
 
-    Task { @MainActor in
-      do {
-        try await super.autosave(withImplicitCancellability: implicitlyCancellable)
-      } catch {
-        Logger.log(.error, "Failed to autosave: \(error)")
-      }
-    }
+    try await super.autosave(withImplicitCancellability: implicitlyCancellable)
   }
 
   override func data(ofType typeName: String) throws -> Data {
+    // Every write entry must fail rather than serialize a stale WebKit snapshot.
+    guard !isOutdated else { throw CocoaError(.fileWriteUnknown) }
     let encoding = suggestedTextEncoding ?? AppPreferences.General.defaultTextEncoding
     return encoding.encode(string: stringValue) ?? stringValue.toData() ?? Data()
   }
@@ -500,30 +461,22 @@ extension EditorDocument {
   /// Override to catch invalid output paths early so we can present more informative errors.
   override func handleSave(_ command: NSScriptCommand) -> Any? {
     guard let fileURL = command.evaluatedArguments?["File"] as? URL else {
-      // Save without predefined destination (will open save panel if needed)
-      return super.handleSave(command)
+      // Save without predefined destination (will open save panel if needed).
+      return saveScriptCommand(command)
     }
 
     let inputExtension = fileURL.pathExtension.lowercased()
 
     // Support extension-less paths by bypassing file type validation
     if inputExtension.isEmpty {
-      Task { @MainActor in
-        do {
-          try await save(to: fileURL.deletingPathExtension(), ofType: "", for: .saveOperation)
-        } catch {
-          Logger.log(.error, "Failed to handle save: \(error)")
-        }
-      }
-
-      return nil
+      return saveScriptCommand(command, destination: (fileURL.deletingPathExtension(), ""))
     }
 
     // Provided limited support for the 'as' parameter
     if let desiredType = command.evaluatedArguments?["FileType"] as? String {
       let desiredExtension = NewFilenameExtension.preferredExtension(for: desiredType).rawValue
       if inputExtension == desiredExtension {
-        return super.handleSave(command)
+        return saveScriptCommand(command, destination: (fileURL, desiredType))
       }
 
       // Raise error because we cannot adjust the extension due to sandbox restrictions
@@ -546,7 +499,8 @@ extension EditorDocument {
       return nil
     }
 
-    return super.handleSave(command)
+    let typeName = NewFilenameExtension.allCases.first { $0.rawValue == inputExtension }?.exportedType ?? "org.textbundle.package"
+    return saveScriptCommand(command, destination: (fileURL, typeName))
   }
 }
 
@@ -705,79 +659,215 @@ private extension EditorDocument {
     return AppPreferences.Assistant.insertFinalNewline || AppPreferences.Assistant.trimTrailingWhitespace
   }
 
-  func updateContent(userInitiated: Bool = false) async {
-    let insertFinalNewline = AppPreferences.Assistant.insertFinalNewline
-    let trimTrailingWhitespace = AppPreferences.Assistant.trimTrailingWhitespace
-
-    // Format when saving files, only if at least one option is enabled
-    if insertFinalNewline || trimTrailingWhitespace {
-      formatCompleted = (try? await bridge?.format.formatContent(
-        insertFinalNewline: insertFinalNewline,
-        trimTrailingWhitespace: trimTrailingWhitespace,
-        userInitiated: userInitiated
-      )) ?? false
+  func saveScriptCommand(_ command: NSScriptCommand, destination: (URL, String)? = nil) -> Any? {
+    command.suspendExecution()
+    enqueueSave(userInitiated: true, saveAs: false, destination: destination) { saved in
+      if !saved {
+        command.scriptErrorNumber = NSInternalScriptError
+        command.scriptErrorString = CocoaError(.fileWriteUnknown).localizedDescription
+      }
+      command.resumeExecution(withResult: nil)
     }
+    return nil
+  }
 
-    if let editorText = await hostViewController?.editorText {
-      stringValue = editorText
+  func enqueueSave(userInitiated: Bool, saveAs: Bool, destination: (URL, String)? = nil, completion: ((Bool) -> Void)? = nil) {
+    // Serialize editor synchronization and save panels as well as the write itself.
+    let previousSave = saveTask
+    saveTask = Task { @MainActor in
+      _ = await previousSave?.value
+      let saved = await performSave(userInitiated: userInitiated, saveAs: saveAs, destination: destination)
+      completion?(saved)
+      return saved
+    }
+  }
 
+  func performSave(userInitiated: Bool, saveAs: Bool, destination: (URL, String)? = nil) async -> Bool {
+    let wasEdited = isOutdated || isDocumentEdited || hasUnautosavedChanges
+    do {
+      if isOutdated || (userInitiated && needsFormatting && hostViewController?.hasFinishedLoading == true) {
+        try await refreshContent(userInitiated: userInitiated)
+      }
+      let savedText = stringValue
+      let savedRevision = hostViewController?.editorTextRevision
+      let didSave: Bool
+      if let (url, typeName) = destination {
+        try await super.save(to: url, ofType: typeName, for: .saveOperation)
+        didSave = true
+      } else {
+        didSave = await withCheckedContinuation { continuation in
+          let callback = DocumentSaveCompletion { continuation.resume(returning: $0) }
+          pendingSaveCompletion = callback
+          if saveAs {
+            super.runModalSavePanel(
+              for: .saveAsOperation,
+              delegate: callback,
+              didSave: #selector(DocumentSaveCompletion.document(_:didSave:contextInfo:)),
+              contextInfo: nil
+            )
+          } else {
+            super.save(withDelegate: callback, didSave: #selector(DocumentSaveCompletion.document(_:didSave:contextInfo:)), contextInfo: nil)
+          }
+        }
+      }
+      pendingSaveCompletion = nil
+      guard didSave else {
+        if wasEdited || isOutdated || hostViewController?.editorTextRevision != savedRevision {
+          markContentDirty(true)
+        }
+        return false
+      }
+      if let fileURL {
+        ActivityHistoryStore.shared.record(.saved, url: fileURL)
+      }
+      return await finishSaving(text: savedText, revision: savedRevision)
+    } catch {
+      if wasEdited || isOutdated {
+        markContentDirty(true)
+      }
+      presentError(error)
+      return false
+    }
+  }
+
+  func refreshContent(userInitiated: Bool = false) async throws {
+    guard let hostViewController, hostViewController.hasFinishedLoading else {
+      if isOutdated {
+        markContentDirty(true)
+        throw CocoaError(.fileReadUnknown)
+      }
+      return // A model-only document already has its synchronously decoded text.
+    }
+    defer { unblockUserInteraction() }
+    do {
+      let insertFinalNewline = AppPreferences.Assistant.insertFinalNewline
+      let trimTrailingWhitespace = AppPreferences.Assistant.trimTrailingWhitespace
+      if insertFinalNewline || trimTrailingWhitespace {
+        let formatted = try await editorScript("""
+          return String(webModules.format.formatContent({insertFinalNewline, trimTrailingWhitespace, userInitiated}));
+          """, arguments: [
+            "insertFinalNewline": insertFinalNewline,
+            "trimTrailingWhitespace": trimTrailingWhitespace,
+            "userInitiated": userInitiated,
+          ])
+        formatCompleted = formatted == "true"
+      }
+      let revision = hostViewController.editorTextRevision
+      let snapshot = try await editorScript("""
+        return JSON.stringify({text: webModules.core.getEditorText(), title: needsTitle ? webModules.toc.getTableOfContents()[0]?.title : undefined});
+        """, arguments: ["needsTitle": fileURL == nil])
+      let content = try JSONDecoder().decode(DocumentEditorSnapshot.self, from: Data(snapshot.utf8))
+      guard hostViewController.editorTextRevision == revision else {
+        throw CocoaError(.fileReadUnknown)
+      }
+      stringValue = content.text
+      let editorText = content.text
       DispatchQueue.global(qos: .utility).async {
         let fileData = editorText.toData() ?? Data()
         let directory = AppCustomization.debugDirectory.fileURL
         try? fileData.write(to: directory.appending(path: "last-edited.md"))
       }
-    }
-
-    // If the content contains headings, use the first one to override the displayName
-    if fileURL == nil, let heading = await hostViewController?.tableOfContents?.first {
-      suggestedFilename = heading.title
-    } else {
-      suggestedFilename = nil
-    }
-
-    isOutdated = false
-    unblockUserInteraction()
-
-    if userInitiated {
-      markContentClean()
+      suggestedFilename = fileURL == nil ? content.title : nil
+      isOutdated = false
+    } catch {
+      isOutdated = true
+      markContentDirty(true)
+      throw error
     }
   }
 
-  func markContentClean() {
-    bridge?.history.markContentClean()
+  func finishSaving(text: String, revision: UInt64?) async -> Bool {
+    guard !isOutdated, hostViewController?.editorTextRevision == revision else {
+      markContentDirty(true)
+      return false
+    }
+    guard hostViewController?.hasFinishedLoading == true else {
+      return true
+    }
+    // Compare and mark in one JavaScript task. A native revision check alone can
+    // miss an edit whose WebKit message is still queued on the main thread.
+    let result = try? await editorScript("""
+      if (webModules.core.getEditorText() !== savedText) return "changed";
+      webModules.history.markContentClean();
+      return "clean";
+      """, arguments: ["savedText": text])
+    guard result == "clean", hostViewController?.editorTextRevision == revision, !isOutdated else {
+      isOutdated = true
+      markContentDirty(true)
+      return false
+    }
+    return true
   }
 
-  @objc func confirmsChanges(_ document: EditorDocument, shouldClose: Bool) {
-    guard shouldClose else {
-      return // Cancelled
+  func editorScript(_ script: String, arguments: [String: Any] = [:]) async throws -> String {
+    guard let hostViewController, hostViewController.hasFinishedLoading else {
+      throw CocoaError(.fileReadUnknown)
     }
-
-    let performClose = {
-      // isReleasedWhenClosed is not initially set to true to prevent crashes when deleting drafts.
-      // However, we need to release the window in the confirmsChanges function;
-      // otherwise, it will cause a memory leak.
-      document.windowControllers.forEach {
-        $0.window?.isReleasedWhenClosed = true
+    return try await withCheckedThrowingContinuation { continuation in
+      let result = DocumentEditorResult(continuation)
+      // Do not race a non-cancellable WebKit task in a task group: the group
+      // would still wait for the hung renderer. The gate ignores late callbacks.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+        result.finish(.failure(CocoaError(.fileReadUnknown)))
       }
-
-      document.close()
-    }
-
-    if document.hasBeenReverted || !document.isDocumentEdited {
-      // Reverted or no unsaved changes
-      performClose()
-    } else {
-      // Delay this for two reasons:
-      //  1. To make it clear to users that their changes are saved
-      //  2. To avoid leftover .sb copies when a document is closed too quickly
-      let closeDelayed = {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-          performClose()
-        }
+      hostViewController.webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { value in
+        result.finish(value.flatMap { value in
+          guard let text = value as? String else {
+            return .failure(CocoaError(.fileReadUnknown))
+          }
+          return .success(text)
+        })
       }
-
-      // Saved
-      document.saveContent(userInitiated: true, completion: closeDelayed)
     }
+  }
+
+  func cancelTermination() {
+    isTerminating = false
+    NSDocumentController.shared.editorDocuments.forEach { $0.isTerminating = false }
+  }
+
+  func notifyDocumentDelegate(_ delegate: Any?, selector: Selector?, result: Bool, contextInfo: UnsafeMutableRawPointer?) {
+    guard let delegate = delegate as? NSObject, let selector, delegate.responds(to: selector),
+          let implementation = delegate.method(for: selector) else {
+      return
+    }
+    typealias Callback = @convention(c) (AnyObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
+    let callback = unsafeBitCast(implementation, to: Callback.self)
+    callback(delegate, selector, self, result, contextInfo)
+  }
+}
+
+private struct DocumentEditorSnapshot: Decodable {
+  let text: String
+  let title: String?
+}
+
+@MainActor
+private final class DocumentSaveCompletion: NSObject {
+  private var completion: ((Bool) -> Void)?
+
+  init(_ completion: @escaping (Bool) -> Void) {
+    self.completion = completion
+  }
+
+  @objc func document(_ document: NSDocument, didSave: Bool, contextInfo: UnsafeMutableRawPointer?) {
+    let callback = completion
+    completion = nil
+    callback?(didSave)
+  }
+}
+
+@MainActor
+private final class DocumentEditorResult {
+  private var continuation: CheckedContinuation<String, Error>?
+
+  init(_ continuation: CheckedContinuation<String, Error>) {
+    self.continuation = continuation
+  }
+
+  func finish(_ result: Result<String, Error>) {
+    let pending = continuation
+    continuation = nil
+    pending?.resume(with: result)
   }
 }

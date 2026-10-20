@@ -7,12 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		247BC6E82E8EB016D3D232EB /* WorkspaceBookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */; };
 		3EA22E606448F0FE568FB44F /* ConversationCaptureQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8CE408836D49A060148D33 /* ConversationCaptureQueue.swift */; };
 		44364087E6BCA571BA044F80 /* QuickActionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A395AA8788DF4B03A555DEB5 /* QuickActionCoordinator.swift */; };
 		661F95743B36C0F38ED812EE /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 352C0D29372D6300A5A0F153 /* Localizable.xcstrings */; };
 		6AA1D7E79DB1F060FA87DC5A /* ConversationCaptureHelper.app in Embed Login Items */ = {isa = PBXBuildFile; fileRef = 961FB6D2491B1AF90D6F16F4 /* ConversationCaptureHelper.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		7C53EC8A4F5A20EF7338851A /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = BBFEBC2ADC29DE511CE74941 /* Localizable.xcstrings */; };
 		826BEBFDED71A42A9E90D357 /* QuickActionViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00E073352B68D84BB2AB97F /* QuickActionViewController.swift */; };
+		83611F5F5D398718ED208A5C /* WorkspaceBookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */; };
 		84FB00F02C6C4AED00850E94 /* AppWritingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84FB00EF2C6C4AED00850E94 /* AppWritingTools.swift */; };
 		8701D0A42CC12321006AF8C2 /* FileVersion in Frameworks */ = {isa = PBXBuildFile; productRef = 8701D0A32CC12321006AF8C2 /* FileVersion */; };
 		87067E2729755D5C0052E795 /* EditorStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87067E2629755D5C0052E795 /* EditorStatusView.swift */; };
@@ -118,6 +120,7 @@
 		87F2B61429AF2F3A0027103E /* NSSpellChecker+Extras.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F2B61329AF2F3A0027103E /* NSSpellChecker+Extras.swift */; };
 		87FAFFD72BE0B6A300FA509D /* AppDelegate+FileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87FAFFD62BE0B6A300FA509D /* AppDelegate+FileSystem.swift */; };
 		A1EEAD3FEA142D4271B06B70 /* ConversationCaptureDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17373C04C5108A6F2F7D4A61 /* ConversationCaptureDocument.swift */; };
+		A9860AF15738A451834553AA /* WorkspaceBookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */; };
 		AA0000100000000000000001 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = AA0000090000000000000001 /* InfoPlist.strings */; };
 		AB1100013000000000000001 /* WorkspaceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100023000000000000001 /* WorkspaceSession.swift */; };
 		AB1100033000000000000001 /* WorkspaceSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100043000000000000001 /* WorkspaceSidebarView.swift */; };
@@ -139,13 +142,16 @@
 		AB3000023000000000000001 /* ConversationCaptureCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3000013000000000000001 /* ConversationCaptureCoordinator.swift */; };
 		B0E02F682D8F77A50060DEA5 /* MarkEdit.sdef in Resources */ = {isa = PBXBuildFile; fileRef = B0E02F672D8F77A50060DEA5 /* MarkEdit.sdef */; };
 		B5086474EC0968B8E2FC20C4 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA5D42A42431B42A426528D /* main.swift */; };
-		DC1000013000000000000001 /* ClipboardHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000023000000000000001 /* ClipboardHistory.swift */; };
-		DC1000033000000000000001 /* ClipboardPaletteController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000043000000000000001 /* ClipboardPaletteController.swift */; };
 		CC000002300000000000001A /* EditorDocument+ClosedTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000002300000000000001B /* EditorDocument+ClosedTab.swift */; };
 		CC000003300000000000001A /* AppDelegate+ClosedTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000003300000000000001B /* AppDelegate+ClosedTab.swift */; };
 		CC000004300000000000001A /* EditorSelectionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000004300000000000001B /* EditorSelectionHistory.swift */; };
 		CC000006300000000000001A /* EditorClosedTabHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000006300000000000001B /* EditorClosedTabHistory.swift */; };
 		CC000020300000000000FD01 /* FileDrop in Frameworks */ = {isa = PBXBuildFile; productRef = CC000020300000000000FD02 /* FileDrop */; };
+		D3C25A5B1E5B944D94459596 /* WorkspaceBookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */; };
+		DC1000013000000000000001 /* ClipboardHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000023000000000000001 /* ClipboardHistory.swift */; };
+		DC1000033000000000000001 /* ClipboardPaletteController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000043000000000000001 /* ClipboardPaletteController.swift */; };
+		DC1000053000000000000001 /* ClipboardCaptureDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */; };
+		DC1000073000000000000001 /* ClipboardCaptureDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */; };
 		EE100008EEEE000000000008 /* ExtensionInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100007EEEE000000000007 /* ExtensionInstaller.swift */; };
 		EE10000AEEEE00000000000A /* ExtensionUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100009EEEE000000000009 /* ExtensionUpdater.swift */; };
 		EE10000CEEEE00000000000C /* ExtensionsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE10000BEEEE00000000000B /* ExtensionsModel.swift */; };
@@ -355,14 +361,16 @@
 		B0E02F672D8F77A50060DEA5 /* MarkEdit.sdef */ = {isa = PBXFileReference; lastKnownFileType = text; path = MarkEdit.sdef; sourceTree = "<group>"; };
 		B8782CD1AC62B06DEFEB2EF8 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BBFEBC2ADC29DE511CE74941 /* Localizable.xcstrings */ = {isa = PBXFileReference; includeInIndex = 1; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorkspaceBookmarkAccess.swift; sourceTree = "<group>"; };
 		CC000002300000000000001B /* EditorDocument+ClosedTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "EditorDocument+ClosedTab.swift"; sourceTree = "<group>"; };
 		CC000003300000000000001B /* AppDelegate+ClosedTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppDelegate+ClosedTab.swift"; sourceTree = "<group>"; };
 		CC000004300000000000001B /* EditorSelectionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSelectionHistory.swift; sourceTree = "<group>"; };
 		CC000006300000000000001B /* EditorClosedTabHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorClosedTabHistory.swift; sourceTree = "<group>"; };
 		D00E073352B68D84BB2AB97F /* QuickActionViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = QuickActionViewController.swift; sourceTree = "<group>"; };
-		DCA5D42A42431B42A426528D /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		DC1000023000000000000001 /* ClipboardHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardHistory.swift; sourceTree = "<group>"; };
 		DC1000043000000000000001 /* ClipboardPaletteController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardPaletteController.swift; sourceTree = "<group>"; };
+		DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipboardCaptureDecoder.swift; sourceTree = "<group>"; };
+		DCA5D42A42431B42A426528D /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		EE100007EEEE000000000007 /* ExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionInstaller.swift; sourceTree = "<group>"; };
 		EE100009EEEE000000000009 /* ExtensionUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionUpdater.swift; sourceTree = "<group>"; };
 		EE10000BEEEE00000000000B /* ExtensionsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionsModel.swift; sourceTree = "<group>"; };
@@ -432,6 +440,7 @@
 				DCA5D42A42431B42A426528D /* main.swift */,
 				DC1000023000000000000001 /* ClipboardHistory.swift */,
 				DC1000043000000000000001 /* ClipboardPaletteController.swift */,
+				DC1000063000000000000001 /* ClipboardCaptureDecoder.swift */,
 				B8782CD1AC62B06DEFEB2EF8 /* Info.plist */,
 				200052792AFC3629E3243183 /* Info.entitlements */,
 				352C0D29372D6300A5A0F153 /* Localizable.xcstrings */,
@@ -455,6 +464,7 @@
 				8743B26229593B2000F83DAE /* Build.xcconfig */,
 				1B856C1F3B2635AE498B508E /* ConversationCaptureHelper */,
 				9F4FECC9F0C2E0DE41A16AD0 /* QuickActionExtension */,
+				DA0AF6E8B7C63D1E27027EA6 /* Shared */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -835,6 +845,15 @@
 			name = "OS X";
 			sourceTree = "<group>";
 		};
+		DA0AF6E8B7C63D1E27027EA6 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				C239CEC032F4E9ED15860859 /* WorkspaceBookmarkAccess.swift */,
+			);
+			name = Shared;
+			path = Shared;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1108,6 +1127,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				826BEBFDED71A42A9E90D357 /* QuickActionViewController.swift in Sources */,
+				D3C25A5B1E5B944D94459596 /* WorkspaceBookmarkAccess.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1118,6 +1138,8 @@
 				B5086474EC0968B8E2FC20C4 /* main.swift in Sources */,
 				DC1000013000000000000001 /* ClipboardHistory.swift in Sources */,
 				DC1000033000000000000001 /* ClipboardPaletteController.swift in Sources */,
+				DC1000053000000000000001 /* ClipboardCaptureDecoder.swift in Sources */,
+				247BC6E82E8EB016D3D232EB /* WorkspaceBookmarkAccess.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1125,6 +1147,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DC1000073000000000000001 /* ClipboardCaptureDecoder.swift in Sources */,
 				AB1200013000000000000001 /* WorkspacePreviewView.swift in Sources */,
 				AB2200033000000000000001 /* AgentPanelView.swift in Sources */,
 				AB1100013000000000000001 /* WorkspaceSession.swift in Sources */,
@@ -1223,6 +1246,7 @@
 				44364087E6BCA571BA044F80 /* QuickActionCoordinator.swift in Sources */,
 				A1EEAD3FEA142D4271B06B70 /* ConversationCaptureDocument.swift in Sources */,
 				3EA22E606448F0FE568FB44F /* ConversationCaptureQueue.swift in Sources */,
+				A9860AF15738A451834553AA /* WorkspaceBookmarkAccess.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1231,6 +1255,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				87152BAC2EC599DD00B39F06 /* FinderTools.swift in Sources */,
+				83611F5F5D398718ED208A5C /* WorkspaceBookmarkAccess.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1314,9 +1339,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ConversationCaptureHelper/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_ConversationCaptureHelper)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ConversationCaptureHelper/Info.plist;
@@ -1325,7 +1351,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.5.4;
+				MARKETING_VERSION = 2.5.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "art.apuch.ksamint.markedit.conversation-capture-helper";
 				PRODUCT_NAME = ConversationCaptureHelper;
 				SDKROOT = macosx;
@@ -1338,9 +1364,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ConversationCaptureHelper/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_ConversationCaptureHelper)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ConversationCaptureHelper/Info.plist;
@@ -1349,7 +1376,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.5.4;
+				MARKETING_VERSION = 2.5.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "art.apuch.ksamint.markedit.dev.conversation-capture-helper";
 				PRODUCT_NAME = ConversationCaptureHelper;
 				SDKROOT = macosx;
@@ -1502,6 +1529,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(MARKEDITMAC_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_MarkEditMac)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1511,7 +1539,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MarkEditMac/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "kmd";
+				INFOPLIST_KEY_CFBundleDisplayName = kmd;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
@@ -1539,6 +1567,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(MARKEDITMAC_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_MarkEditMac)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1548,7 +1577,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MarkEditMac/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "kmd";
+				INFOPLIST_KEY_CFBundleDisplayName = kmd;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
@@ -1573,6 +1602,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FinderExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_FinderExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1619,6 +1649,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FinderExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_FinderExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1664,6 +1695,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = "$(PREVIEWEXTENSION_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_PreviewExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(inherited)";
@@ -1695,6 +1727,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = "$(PREVIEWEXTENSION_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_PreviewExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(inherited)";
@@ -1726,13 +1759,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = QuickActionExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_QuickActionExtension)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = QuickActionExtension/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.5.4;
+				MARKETING_VERSION = 2.5.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "art.apuch.ksamint.markedit.quick-actions";
 				PRODUCT_NAME = QuickActionExtension;
 				SDKROOT = macosx;
@@ -1746,13 +1780,14 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = QuickActionExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_QuickActionExtension)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = QuickActionExtension/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.5.4;
+				MARKETING_VERSION = 2.5.6;
 				PRODUCT_BUNDLE_IDENTIFIER = "art.apuch.ksamint.markedit.dev.quick-actions";
 				PRODUCT_NAME = QuickActionExtension;
 				SDKROOT = macosx;

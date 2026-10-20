@@ -76,7 +76,8 @@ enum ClipboardStorageEnvironment {
     Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true
   }
 
-  static var hasAppGroupEntitlement: Bool {
+  // Entitlements cannot change while the process runs; resolve once.
+  static let hasAppGroupEntitlement: Bool = {
     guard let task = SecTaskCreateFromSelf(nil),
           let groups = SecTaskCopyValueForEntitlement(
             task,
@@ -84,7 +85,7 @@ enum ClipboardStorageEnvironment {
             nil
           ) as? [String] else { return false }
     return groups.contains(appGroupIdentifier)
-  }
+  }()
 
   static func developmentKey(named fileName: String) throws -> SymmetricKey {
     guard isDevelopmentBundle else { throw CocoaError(.fileWriteNoPermission) }
@@ -93,8 +94,8 @@ enum ClipboardStorageEnvironment {
     if let data = try? Data(contentsOf: url), data.count == 32 { return SymmetricKey(data: data) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let data = Data(SymmetricKey(size: .bits256).withUnsafeBytes(Array.init))
-    try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
-    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    try data.write(to: url, options: ClipboardFileProtection.atomicWriteOptions(for: url))
+    try ClipboardFileProtection.apply(to: url)
     return SymmetricKey(data: data)
   }
 }
@@ -186,6 +187,37 @@ enum ClipboardHistoryJournalEvent: Codable {
   case clearItems
 }
 
+enum ClipboardFileProtection {
+  static func volumeSupportsProtection(_ url: URL) throws -> Bool? {
+    try (url as NSURL).resourceValues(forKeys: [.volumeSupportsFileProtectionKey])[
+      .volumeSupportsFileProtectionKey
+    ] as? Bool
+  }
+
+  static func atomicWriteOptions(
+    for url: URL,
+    supportsProtection: (URL) throws -> Bool? = volumeSupportsProtection
+  ) throws -> Data.WritingOptions {
+    try supportsProtection(url.deletingLastPathComponent()) == false
+      ? [.atomic] : [.atomic, .completeFileProtectionUnlessOpen]
+  }
+
+  static func apply(
+    to url: URL,
+    supportsProtection: (URL) throws -> Bool? = volumeSupportsProtection,
+    setAttributes: ([FileAttributeKey: Any], String) throws -> Void = {
+      try FileManager.default.setAttributes($0, ofItemAtPath: $1)
+    }
+  ) throws {
+    // Encryption and owner-only permissions are mandatory on every filesystem.
+    // Some macOS volumes do not implement the additional data-protection class.
+    try setAttributes([.posixPermissions: 0o600], url.path)
+    if try supportsProtection(url) != false {
+      try setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen], url.path)
+    }
+  }
+}
+
 @MainActor
 final class ClipboardHistoryStore {
   static let maximumRecentItems = 10_000
@@ -202,12 +234,15 @@ final class ClipboardHistoryStore {
   private let overrideJournalURL: URL?
   private let overrideLegacyURL: URL?
   private let overrideKey: SymmetricKey?
+  private var cachedHistoryKey: SymmetricKey?
   private(set) var items = [ClipboardHistoryItem]()
   private(set) var tags = [ClipboardUserTag]()
   private var itemPositions = [String: Int]()
   private var recentItemCount = 0
   private var journalByteCount = 0
   private var journalRecordCount = 0
+  private var journalProtectionApplied = false
+  private(set) var lastPersistenceFailure: String?
   var onKnowledgeChange: (() -> Void)?
 
   init(fileURL: URL? = nil, legacyFileURL: URL? = nil, key: SymmetricKey? = nil) {
@@ -466,15 +501,19 @@ private extension ClipboardHistoryStore {
     var decodedAny = false
     journalByteCount = 0
     journalRecordCount = 0
+    // One Keychain round-trip and one decoder for the whole journal, not one
+    // per record; a long journal used to pay thousands of securityd calls.
+    guard let key = try? historyKey() else { return .corrupt }
+    let decoder = JSONDecoder()
     while let header = readExactly(4, from: handle) {
       let length = Int(header[0]) | (Int(header[1]) << 8)
         | (Int(header[2]) << 16) | (Int(header[3]) << 24)
       guard length > 0, length <= Self.maximumJournalRecordBytes,
             let record = readExactly(length, from: handle) else { break }
       guard let sealed = try? AES.GCM.SealedBox(combined: record),
-            let plaintext = try? AES.GCM.open(sealed, using: historyKey()) else { break }
-      let events = (try? JSONDecoder().decode([ClipboardHistoryJournalEvent].self, from: plaintext))
-        ?? (try? [JSONDecoder().decode(ClipboardHistoryJournalEvent.self, from: plaintext)])
+            let plaintext = try? AES.GCM.open(sealed, using: key) else { break }
+      let events = (try? decoder.decode([ClipboardHistoryJournalEvent].self, from: plaintext))
+        ?? (try? [decoder.decode(ClipboardHistoryJournalEvent.self, from: plaintext)])
       guard let events else { break }
       events.forEach(apply)
       decodedAny = true
@@ -525,11 +564,14 @@ private extension ClipboardHistoryStore {
       let url = try historyJournalURL()
       try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
       if !FileManager.default.fileExists(atPath: url.path) {
-        guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return false }
-        try FileManager.default.setAttributes([
-          .protectionKey: FileProtectionType.completeUnlessOpen,
-          .posixPermissions: 0o600,
-        ], ofItemAtPath: url.path)
+        guard FileManager.default.createFile(
+          atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]
+        ) else { throw CocoaError(.fileWriteUnknown) }
+        journalProtectionApplied = false
+      }
+      if !journalProtectionApplied {
+        try ClipboardFileProtection.apply(to: url)
+        journalProtectionApplied = true
       }
       try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
       let handle = try FileHandle(forWritingTo: url)
@@ -543,8 +585,16 @@ private extension ClipboardHistoryStore {
       try handle.write(contentsOf: combined)
       journalByteCount += 4 + combined.count
       journalRecordCount += 1
+      lastPersistenceFailure = nil
       return true
-    } catch { return false }
+    } catch {
+      // Diagnostic codes only: never retain clipboard content, keys, or paths.
+      let failure = error as NSError
+      let underlying = failure.userInfo[NSUnderlyingErrorKey] as? NSError
+      lastPersistenceFailure = "\(failure.domain):\(failure.code)"
+        + (underlying.map { " (\($0.domain):\($0.code))" } ?? "")
+      return false
+    }
   }
 
   func rewriteJournal(items: [ClipboardHistoryItem], tags: [ClipboardUserTag]) throws {
@@ -555,10 +605,7 @@ private extension ClipboardHistoryStore {
     guard FileManager.default.createFile(atPath: temporaryURL.path, contents: nil) else {
       throw CocoaError(.fileWriteUnknown)
     }
-    try FileManager.default.setAttributes([
-      .protectionKey: FileProtectionType.completeUnlessOpen,
-      .posixPermissions: 0o600,
-    ], ofItemAtPath: temporaryURL.path)
+    try ClipboardFileProtection.apply(to: temporaryURL)
     let handle = try FileHandle(forWritingTo: temporaryURL)
     let key = try historyKey()
     var recordCount = 0
@@ -591,10 +638,8 @@ private extension ClipboardHistoryStore {
     if FileManager.default.fileExists(atPath: url.path) {
       _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
     } else { try FileManager.default.moveItem(at: temporaryURL, to: url) }
-    try FileManager.default.setAttributes([
-      .protectionKey: FileProtectionType.completeUnlessOpen,
-      .posixPermissions: 0o600,
-    ], ofItemAtPath: url.path)
+    try ClipboardFileProtection.apply(to: url)
+    journalProtectionApplied = true
     journalByteCount = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
     journalRecordCount = recordCount
   }
@@ -714,6 +759,13 @@ private extension ClipboardHistoryStore {
 
   func historyKey() throws -> SymmetricKey {
     if let overrideKey { return overrideKey }
+    if let cachedHistoryKey { return cachedHistoryKey }
+    let key = try resolveHistoryKey()
+    cachedHistoryKey = key
+    return key
+  }
+
+  private func resolveHistoryKey() throws -> SymmetricKey {
     if !ClipboardStorageEnvironment.hasAppGroupEntitlement {
       return try ClipboardStorageEnvironment.developmentKey(named: "clipboard-history-v1.key")
     }
@@ -835,7 +887,7 @@ enum ClipboardKnowledgeArchive {
       )
       try Data(labelMarkdown.utf8).write(
         to: labelCatalog,
-        options: [.atomic, .completeFileProtectionUnlessOpen]
+        options: ClipboardFileProtection.atomicWriteOptions(for: labelCatalog)
       )
       written += 1
     }
@@ -853,7 +905,9 @@ enum ClipboardKnowledgeArchive {
         continue
       }
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-      try Data(markdown.utf8).write(to: destination, options: [.atomic, .completeFileProtectionUnlessOpen])
+      try Data(markdown.utf8).write(
+        to: destination, options: ClipboardFileProtection.atomicWriteOptions(for: destination)
+      )
       written += 1
     }
     return Report(written: written, unchanged: unchanged)

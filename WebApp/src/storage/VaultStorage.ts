@@ -18,6 +18,11 @@ const FALLBACK_STORE = 'vault-objects';
 const LOCAL_RECORD_DIRECTORY = 'local-records';
 
 type LocalRecord = { expiresAt: number; value: unknown };
+type ReplacementRecovery = {
+  beforeManifest: string;
+  afterManifest: string;
+  beforeObjects: Record<string, string>;
+};
 
 type LegacyVaultFile = Pick<VaultFile, 'id' | 'path' | 'modifiedAt'>;
 type LegacyVaultManifest = Omit<VaultManifest, 'version' | 'files'> & {
@@ -31,6 +36,99 @@ type EncryptedPayload = {
 };
 
 export class VaultStorage {
+  private writes: Promise<unknown> = Promise.resolve();
+  private syncing = false;
+  private recoveryRequired = false;
+  private recovery?: Promise<void>;
+  private releaseWriter?: () => Promise<void>;
+  private closed = false;
+  private closing?: Promise<void>;
+  private syncController?: AbortController;
+  private syncFinished?: Promise<void>;
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.closed) return Promise.reject(new Error('Workspace is closed'));
+    if (this.syncing) return Promise.reject(new Error('Workspace is read-only while syncing'));
+    const task = this.writes.catch(() => undefined).then(async () => {
+      if (this.recoveryRequired) await this.recoverReplacement();
+      return operation();
+    });
+    this.writes = task;
+    return task;
+  }
+
+  async synchronize<T extends {
+    files: NoteFile[];
+    attachments: AttachmentFile[];
+    conflictRecords: ConflictRecord[];
+    commitSyncState?: () => Promise<void>;
+  }>(
+    exchange: (snapshot: { files: NoteFile[]; attachments: AttachmentFile[] }, signal: AbortSignal) => Promise<T>,
+    timeoutMs = 30_000,
+  ): Promise<{ report: T; files: NoteFile[]; conflicts: ConflictRecord[] }> {
+    if (this.closed) throw new Error('Workspace is closed');
+    if (this.syncing) throw new Error('Workspace is already syncing');
+    this.syncing = true;
+    const controller = new AbortController();
+    this.syncController = controller;
+    let finish!: () => void;
+    this.syncFinished = new Promise<void>(resolve => { finish = resolve; });
+    const cancelled = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+    });
+    // Closing while local writes drain must not leave an unhandled cancellation.
+    void cancelled.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Writes admitted before the lock must finish before the snapshot is read.
+      try {
+        await this.writes;
+      } catch (error) {
+        if (!this.recoveryRequired) throw error;
+      }
+      if (this.recoveryRequired) await this.recoverReplacement();
+      const files = await Promise.all(this.listFiles().map(file => this.readFile(file.id)));
+      const attachments = await Promise.all(this.listAllFiles()
+        .filter(file => file.kind === 'attachment').map(file => this.readAttachment(file.id)));
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error('Sync timed out. Local editing is available; retry sync when connected.');
+          controller.abort(error);
+          reject(error);
+        }, timeoutMs);
+      });
+      controller.signal.throwIfAborted();
+      const report = await Promise.race([exchange({ files, attachments }, controller.signal), timeout, cancelled]);
+      clearTimeout(timer);
+      controller.signal.throwIfAborted();
+      // OPFS commits cannot be cancelled: keep the lock until local writes settle.
+      const synchronized = await this.replaceFilesUnlocked(report.files);
+      await this.replaceAttachmentsUnlocked(report.attachments);
+      const conflicts = await this.appendConflictsUnlocked(report.conflictRecords);
+      await report.commitSyncState?.();
+      return { report, files: synchronized, conflicts };
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      this.syncing = false;
+      this.syncController = undefined;
+      finish();
+    }
+  }
+
+  close(): Promise<void> {
+    this.closed = true;
+    this.syncController?.abort(new Error('Workspace closed'));
+    this.closing ??= (async () => {
+      await this.syncFinished;
+      await this.writes.catch(() => undefined);
+      await this.recovery?.catch(() => undefined);
+      await this.releaseWriter?.();
+      this.releaseWriter = undefined;
+    })();
+    return this.closing;
+  }
+
   private constructor(
     private readonly workspaceId: string,
     private readonly key: CryptoKey,
@@ -39,6 +137,39 @@ export class VaultStorage {
   ) {}
 
   static async open(workspaceId = 'offline'): Promise<VaultStorage> {
+    const release = await this.acquireWriterLock(workspaceId);
+    try {
+      const storage = await this.openLocked(workspaceId);
+      storage.releaseWriter = release;
+      return storage;
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
+
+  private static async acquireWriterLock(workspaceId: string): Promise<() => Promise<void>> {
+    if (!navigator.locks) {
+      throw new Error('Safe local storage requires Web Locks. Open this workspace in a supported browser.');
+    }
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let request!: Promise<void>;
+    await new Promise<void>((resolve, reject) => {
+      request = navigator.locks.request(`ksamint-vault-writer:${workspaceId}`, { ifAvailable: true }, async lock => {
+        if (!lock) throw new Error('This workspace is already open in another tab. Close that tab and try again.');
+        resolve();
+        await held;
+      }).then(() => undefined);
+      void request.catch(reject);
+    });
+    return async () => {
+      release();
+      await request;
+    };
+  }
+
+  private static async openLocked(workspaceId: string): Promise<VaultStorage> {
     const key = await deviceKey(workspaceId);
     const opfsRoot = await workspaceDirectory(workspaceId);
     const encryptedManifest = await readObject(opfsRoot, workspaceId, MANIFEST_FILE);
@@ -60,6 +191,8 @@ export class VaultStorage {
     }
 
     const storage = new VaultStorage(workspaceId, key, manifest, opfsRoot);
+    await storage.recoverReplacement();
+    manifest = storage.manifest;
     if (migrated) {
       await storage.refreshLegacyFileSizes();
       await storage.persistManifest();
@@ -88,6 +221,8 @@ export class VaultStorage {
   }
 
   async readFile(id: string): Promise<NoteFile> {
+    if (this.closed) throw new Error('Workspace is closed');
+    if (this.recoveryRequired) await this.recoverReplacement();
     const file = this.manifest.files.find(candidate => candidate.id === id);
     if (!file) {
       throw new Error('File not found');
@@ -104,66 +239,75 @@ export class VaultStorage {
   }
 
   async createFile(path: string, content = ''): Promise<NoteFile> {
-    const normalizedPath = normalizePath(path);
-    if (this.manifest.files.some(file => file.path === normalizedPath)) {
-      throw new Error('A file already exists at that path');
-    }
-    const file: VaultFile = {
-      id: crypto.randomUUID(),
-      path: normalizedPath,
-      modifiedAt: Date.now(),
-      kind: 'markdown',
-      mimeType: 'text/markdown',
-      byteSize: new TextEncoder().encode(content).length,
-    };
-    this.manifest.files.push(file);
-    await this.writeContent(file, content);
-    await this.persistManifest();
-    return { ...file, kind: 'markdown', content, metadata: parseMetadata(content) };
+    return this.mutate(async () => {
+      const normalizedPath = normalizePath(path);
+      if (this.manifest.files.some(file => file.path === normalizedPath)) {
+        throw new Error('A file already exists at that path');
+      }
+      const file: VaultFile = {
+        id: crypto.randomUUID(),
+        path: normalizedPath,
+        modifiedAt: Date.now(),
+        kind: 'markdown',
+        mimeType: 'text/markdown',
+        byteSize: new TextEncoder().encode(content).length,
+      };
+      this.manifest.files.push(file);
+      await this.writeContent(file, content);
+      await this.persistManifest();
+      return { ...file, kind: 'markdown', content, metadata: parseMetadata(content) };
+    });
   }
 
   async importFiles(
     documents: Array<{ path: string; content: string; modifiedAt: number }>,
   ): Promise<NoteFile[]> {
-    if (!documents.length) {
-      return [];
-    }
-    const originalFiles = this.manifest.files.map(file => ({ ...file }));
-    const paths = new Set(this.manifest.files.map(file => file.path));
-    const imported: NoteFile[] = [];
-    try {
-      for (const document of documents) {
-        const path = normalizePath(document.path);
-        if (paths.has(path)) {
-          throw new Error(`A file already exists at ${path}`);
-        }
-        paths.add(path);
-        const file: VaultFile = {
-          id: crypto.randomUUID(),
-          path,
-          modifiedAt: Math.max(0, Math.floor(document.modifiedAt)),
-          kind: 'markdown',
-          mimeType: 'text/markdown',
-          byteSize: new TextEncoder().encode(document.content).length,
-        };
-        this.manifest.files.push(file);
-        await this.writeContent(file, document.content);
-        imported.push({ ...file, kind: 'markdown', content: document.content, metadata: parseMetadata(document.content) });
+    return this.mutate(async () => {
+      if (!documents.length) {
+        return [];
       }
-      await this.persistManifest();
-      return imported;
-    } catch (error) {
-      this.manifest.files = originalFiles;
-      throw error;
-    }
+      const originalFiles = this.manifest.files.map(file => ({ ...file }));
+      const paths = new Set(this.manifest.files.map(file => file.path));
+      const imported: NoteFile[] = [];
+      try {
+        for (const document of documents) {
+          const path = normalizePath(document.path);
+          if (paths.has(path)) {
+            throw new Error(`A file already exists at ${path}`);
+          }
+          paths.add(path);
+          const file: VaultFile = {
+            id: crypto.randomUUID(),
+            path,
+            modifiedAt: Math.max(0, Math.floor(document.modifiedAt)),
+            kind: 'markdown',
+            mimeType: 'text/markdown',
+            byteSize: new TextEncoder().encode(document.content).length,
+          };
+          this.manifest.files.push(file);
+          await this.writeContent(file, document.content);
+          imported.push({ ...file, kind: 'markdown', content: document.content, metadata: parseMetadata(document.content) });
+        }
+        await this.persistManifest();
+        return imported;
+      } catch (error) {
+        this.manifest.files = originalFiles;
+        throw error;
+      }
+    });
   }
 
   async writeFile(id: string, content: string): Promise<NoteFile> {
+    return this.mutate(() => this.writeFileUnlocked(id, content));
+  }
+
+  private async writeFileUnlocked(id: string, content: string): Promise<NoteFile> {
     const file = this.manifest.files.find(candidate => candidate.id === id);
     if (!file || file.kind === 'attachment') {
       throw new Error('File not found');
     }
     file.modifiedAt = Date.now();
+    delete file.contentDigest;
     file.byteSize = new TextEncoder().encode(content).length;
     await this.writeContent(file, content);
     await this.persistManifest();
@@ -171,32 +315,38 @@ export class VaultStorage {
   }
 
   async setMetadata(id: string, metadata: NoteMetadata): Promise<NoteFile> {
-    const file = await this.readFile(id);
-    return this.writeFile(id, applyMetadata(file.content, metadata));
+    return this.mutate(async () => {
+      const file = await this.readFile(id);
+      return this.writeFileUnlocked(id, applyMetadata(file.content, metadata));
+    });
   }
 
   async renameFile(id: string, path: string): Promise<void> {
-    const normalizedPath = normalizePath(path);
-    if (this.manifest.files.some(file => file.id !== id && file.path === normalizedPath)) {
-      throw new Error('A file already exists at that path');
-    }
-    const file = this.manifest.files.find(candidate => candidate.id === id);
-    if (!file) {
-      throw new Error('File not found');
-    }
-    file.path = normalizedPath;
-    file.modifiedAt = Date.now();
-    await this.persistManifest();
+    return this.mutate(async () => {
+      const normalizedPath = normalizePath(path);
+      if (this.manifest.files.some(file => file.id !== id && file.path === normalizedPath)) {
+        throw new Error('A file already exists at that path');
+      }
+      const file = this.manifest.files.find(candidate => candidate.id === id);
+      if (!file) {
+        throw new Error('File not found');
+      }
+      file.path = normalizedPath;
+      file.modifiedAt = Date.now();
+      await this.persistManifest();
+    });
   }
 
   async deleteFile(id: string): Promise<void> {
-    const index = this.manifest.files.findIndex(file => file.id === id);
-    if (index < 0) {
-      throw new Error('File not found');
-    }
-    this.manifest.files.splice(index, 1);
-    await deleteObject(this.opfsRoot, this.workspaceId, objectName(id));
-    await this.persistManifest();
+    return this.mutate(async () => {
+      const index = this.manifest.files.findIndex(file => file.id === id);
+      if (index < 0) {
+        throw new Error('File not found');
+      }
+      this.manifest.files.splice(index, 1);
+      await deleteObject(this.opfsRoot, this.workspaceId, objectName(id));
+      await this.persistManifest();
+    });
   }
 
   async writeAttachment(input: {
@@ -206,38 +356,42 @@ export class VaultStorage {
     contentDigest: string;
     modifiedAt?: number;
   }): Promise<AttachmentFile> {
-    const path = normalizeAssetPath(input.path);
-    const existing = this.manifest.files.find(file => file.path === path);
-    if (existing && existing.kind !== 'attachment') {
-      throw new Error(`A Markdown file already exists at ${path}`);
-    }
-    if (existing?.contentDigest === input.contentDigest) {
-      return { ...existing, kind: 'attachment', bytes: input.bytes.slice() };
-    }
-    const file: VaultFile = existing ?? {
-      id: crypto.randomUUID(),
-      path,
-      modifiedAt: input.modifiedAt ?? Date.now(),
-      kind: 'attachment',
-      mimeType: input.mimeType || 'application/octet-stream',
-      byteSize: input.bytes.length,
-    };
-    file.modifiedAt = input.modifiedAt ?? Date.now();
-    file.mimeType = input.mimeType || 'application/octet-stream';
-    file.byteSize = input.bytes.length;
-    file.contentDigest = input.contentDigest;
-    if (!existing) this.manifest.files.push(file);
-    await writeObject(
-      this.opfsRoot,
-      this.workspaceId,
-      objectName(file.id),
-      await encryptBytes(this.key, input.bytes),
-    );
-    await this.persistManifest();
-    return { ...file, kind: 'attachment', bytes: input.bytes.slice() };
+    return this.mutate(async () => {
+      const path = normalizeAssetPath(input.path);
+      const existing = this.manifest.files.find(file => file.path === path);
+      if (existing && existing.kind !== 'attachment') {
+        throw new Error(`A Markdown file already exists at ${path}`);
+      }
+      if (existing?.contentDigest === input.contentDigest) {
+        return { ...existing, kind: 'attachment', bytes: input.bytes.slice() };
+      }
+      const file: VaultFile = existing ?? {
+        id: crypto.randomUUID(),
+        path,
+        modifiedAt: input.modifiedAt ?? Date.now(),
+        kind: 'attachment',
+        mimeType: input.mimeType || 'application/octet-stream',
+        byteSize: input.bytes.length,
+      };
+      file.modifiedAt = input.modifiedAt ?? Date.now();
+      file.mimeType = input.mimeType || 'application/octet-stream';
+      file.byteSize = input.bytes.length;
+      file.contentDigest = input.contentDigest;
+      if (!existing) this.manifest.files.push(file);
+      await writeObject(
+        this.opfsRoot,
+        this.workspaceId,
+        objectName(file.id),
+        await encryptBytes(this.key, input.bytes),
+      );
+      await this.persistManifest();
+      return { ...file, kind: 'attachment', bytes: input.bytes.slice() };
+    });
   }
 
   async readAttachment(id: string): Promise<AttachmentFile> {
+    if (this.closed) throw new Error('Workspace is closed');
+    if (this.recoveryRequired) await this.recoverReplacement();
     const file = this.manifest.files.find(candidate => candidate.id === id);
     if (!file || file.kind !== 'attachment') {
       throw new Error('Attachment not found');
@@ -248,12 +402,14 @@ export class VaultStorage {
   }
 
   async replaceAttachments(attachments: AttachmentFile[]): Promise<AttachmentFile[]> {
+    return this.mutate(() => this.replaceAttachmentsUnlocked(attachments));
+  }
+
+  private async replaceAttachmentsUnlocked(attachments: AttachmentFile[]): Promise<AttachmentFile[]> {
     const expected = new Set(attachments.map(attachment => attachment.id));
     const removed = this.manifest.files.filter(file => file.kind === 'attachment' && !expected.has(file.id));
-    for (const file of removed) {
-      await deleteObject(this.opfsRoot, this.workspaceId, objectName(file.id));
-    }
-    this.manifest.files = this.manifest.files.filter(file => file.kind !== 'attachment');
+    const objects = new Map<string, ArrayBuffer>();
+    const metadataFiles: VaultFile[] = [];
     for (const attachment of attachments) {
       const path = normalizeAssetPath(attachment.path);
       const metadata: VaultFile = {
@@ -265,15 +421,16 @@ export class VaultStorage {
         byteSize: attachment.bytes.length,
         contentDigest: attachment.contentDigest,
       };
-      this.manifest.files.push(metadata);
-      await writeObject(
-        this.opfsRoot,
-        this.workspaceId,
-        objectName(metadata.id),
-        await encryptBytes(this.key, attachment.bytes),
-      );
+      metadataFiles.push(metadata);
+      objects.set(objectName(metadata.id), await encryptBytes(this.key, attachment.bytes));
     }
-    await this.persistManifest();
+    await this.commitReplacement(
+      [...this.manifest.files.filter(file => file.kind !== 'attachment'), ...metadataFiles],
+      objects,
+    );
+    for (const file of removed) {
+      await deleteObject(this.opfsRoot, this.workspaceId, objectName(file.id)).catch(() => undefined);
+    }
     return structuredClone(attachments);
   }
 
@@ -283,9 +440,11 @@ export class VaultStorage {
     value: unknown,
     expiresAt: number,
   ): Promise<void> {
-    const records = await this.readLocalRecords(namespace);
-    records[id] = { expiresAt, value };
-    await this.writeLocalRecords(namespace, records);
+    return this.mutate(async () => {
+      const records = await this.readLocalRecords(namespace);
+      records[id] = { expiresAt, value };
+      await this.writeLocalRecords(namespace, records);
+    });
   }
 
   async readLocalRecord<T>(namespace: string, id: string): Promise<T | undefined> {
@@ -296,12 +455,18 @@ export class VaultStorage {
   }
 
   async deleteLocalRecord(namespace: string, id: string): Promise<void> {
-    const records = await this.readLocalRecords(namespace);
-    delete records[id];
-    await this.writeLocalRecords(namespace, records);
+    return this.mutate(async () => {
+      const records = await this.readLocalRecords(namespace);
+      delete records[id];
+      await this.writeLocalRecords(namespace, records);
+    });
   }
 
   async replaceFiles(files: NoteFile[]): Promise<NoteFile[]> {
+    return this.mutate(() => this.replaceFilesUnlocked(files));
+  }
+
+  private async replaceFilesUnlocked(files: NoteFile[]): Promise<NoteFile[]> {
     const ids = new Set<string>();
     const paths = new Set<string>();
     const normalized = files.map(file => {
@@ -321,23 +486,44 @@ export class VaultStorage {
         metadata: parseMetadata(file.content),
       };
     });
+    // Re-encrypting every note on every sync and leaving replaced objects
+    // behind made each sync O(workspace) in crypto and grew OPFS forever.
+    const previousNotes = new Map(
+      this.manifest.files
+        .filter(file => file.kind !== 'attachment')
+        .map(file => [file.id, file] as const),
+    );
+    const objects = new Map<string, ArrayBuffer>();
     for (const file of normalized) {
-      await this.writeContent(file, file.content);
+      const previous = previousNotes.get(file.id);
+      const unchanged = previous !== undefined
+        && typeof previous.contentDigest === 'string'
+        && previous.contentDigest.length > 0
+        && previous.contentDigest === file.contentDigest
+        && previous.byteSize === file.byteSize;
+      if (!unchanged) {
+        objects.set(objectName(file.id), await encryptText(this.key, file.content));
+      }
     }
     const attachments = this.manifest.files.filter(file => file.kind === 'attachment');
-    this.manifest.files = [
-      ...normalized.map(({ id, path, modifiedAt, kind, mimeType, byteSize, contentDigest }) => ({
-        id,
-        path,
-        modifiedAt,
-        kind,
-        mimeType,
-        byteSize,
-        contentDigest,
-      })),
-      ...attachments,
-    ];
-    await this.persistManifest();
+    await this.commitReplacement([
+        ...normalized.map(({ id, path, modifiedAt, kind, mimeType, byteSize, contentDigest }) => ({
+          id,
+          path,
+          modifiedAt,
+          kind,
+          mimeType,
+          byteSize,
+          contentDigest,
+        })),
+        ...attachments,
+    ], objects);
+    // Delete only after the saved manifest no longer references these objects.
+    for (const id of previousNotes.keys()) {
+      if (!ids.has(id)) {
+        await deleteObject(this.opfsRoot, this.workspaceId, objectName(id)).catch(() => undefined);
+      }
+    }
     return structuredClone(normalized);
   }
 
@@ -354,6 +540,10 @@ export class VaultStorage {
   }
 
   async appendConflicts(records: ConflictRecord[]): Promise<ConflictRecord[]> {
+    return this.mutate(() => this.appendConflictsUnlocked(records));
+  }
+
+  private async appendConflictsUnlocked(records: ConflictRecord[]): Promise<ConflictRecord[]> {
     if (!records.length) {
       return this.listConflicts();
     }
@@ -368,14 +558,88 @@ export class VaultStorage {
     id: string,
     resolution: ConflictResolution,
   ): Promise<ConflictRecord[]> {
-    const records = await this.listConflicts();
-    const record = records.find(candidate => candidate.id === id);
-    if (!record) {
-      throw new Error('Conflict record not found');
+    return this.mutate(async () => {
+      const records = await this.listConflicts();
+      const record = records.find(candidate => candidate.id === id);
+      if (!record) {
+        throw new Error('Conflict record not found');
+      }
+      record.resolution = structuredClone(resolution);
+      await this.persistConflicts(records);
+      return structuredClone(records);
+    });
+  }
+
+  private async commitReplacement(files: VaultFile[], objects: Map<string, ArrayBuffer>): Promise<void> {
+    const nextManifest = { ...this.manifest, files, updatedAt: Date.now() };
+    const afterManifest = await encryptText(this.key, JSON.stringify(nextManifest));
+    const beforeManifest = await readObject(this.opfsRoot, this.workspaceId, MANIFEST_FILE)
+      ?? await encryptText(this.key, JSON.stringify(this.manifest));
+    const beforeObjects: Record<string, string> = {};
+    for (const path of objects.keys()) {
+      const previous = await readObject(this.opfsRoot, this.workspaceId, path);
+      if (previous) beforeObjects[path] = encodePayload(previous);
     }
-    record.resolution = structuredClone(resolution);
-    await this.persistConflicts(records);
-    return structuredClone(records);
+    const recovery: ReplacementRecovery = {
+      beforeManifest: encodePayload(beforeManifest),
+      afterManifest: encodePayload(afterManifest),
+      beforeObjects,
+    };
+    // The encrypted preimages must be durable before any referenced bytes change.
+    try {
+      await this.writeLocalRecords('sync-recovery', {
+        pending: { expiresAt: Number.MAX_SAFE_INTEGER, value: recovery },
+      });
+      for (const [path, payload] of objects) {
+        await writeObject(this.opfsRoot, this.workspaceId, path, payload);
+      }
+      await writeObject(this.opfsRoot, this.workspaceId, MANIFEST_FILE, afterManifest);
+      this.manifest = nextManifest;
+    } catch (error) {
+      this.recoveryRequired = true;
+      try {
+        await this.recoverReplacement();
+      } catch (recoveryError) {
+        throw new AggregateError([error, recoveryError], 'Sync recovery is pending. Original data is preserved; retry when local storage is available.', { cause: recoveryError });
+      }
+      throw error;
+    }
+    // A failed journal cleanup must never roll back a successfully saved manifest.
+    this.recoveryRequired = true;
+    await this.recoverReplacement();
+  }
+
+  private recoverReplacement(): Promise<void> {
+    if (this.recovery) return this.recovery;
+    this.recovery = (async () => {
+      const recovery = await this.readLocalRecord<ReplacementRecovery>('sync-recovery', 'pending');
+      if (!recovery) {
+        this.recoveryRequired = false;
+        return;
+      }
+      this.recoveryRequired = true;
+      const current = await readObject(this.opfsRoot, this.workspaceId, MANIFEST_FILE);
+      const committed = current !== undefined && encodePayload(current) === recovery.afterManifest;
+      const manifest = decodePayload(committed ? recovery.afterManifest : recovery.beforeManifest);
+      if (!committed) {
+        const errors: unknown[] = [];
+        for (const [path, payload] of Object.entries(recovery.beforeObjects)) {
+          try {
+            await writeObject(this.opfsRoot, this.workspaceId, path, decodePayload(payload));
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (errors.length) throw new AggregateError(errors, 'Original file bytes could not yet be restored');
+        if (!current || encodePayload(current) !== recovery.beforeManifest) {
+          await writeObject(this.opfsRoot, this.workspaceId, MANIFEST_FILE, manifest);
+        }
+      }
+      this.manifest = migrateVaultManifest(JSON.parse(await decryptText(this.key, manifest)));
+      await this.writeLocalRecords('sync-recovery', {});
+      this.recoveryRequired = false;
+    })().finally(() => { this.recovery = undefined; });
+    return this.recovery;
   }
 
   private async writeContent(file: VaultFile, content: string): Promise<void> {
@@ -435,6 +699,19 @@ export function migrateVaultManifest(value: VaultManifest | LegacyVaultManifest)
       byteSize: 0,
     })),
   };
+}
+
+function encodePayload(value: ArrayBuffer): string {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  for (let start = 0; start < bytes.length; start += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(start, start + 32_768));
+  }
+  return btoa(binary);
+}
+
+function decodePayload(value: string): ArrayBuffer {
+  return Uint8Array.from(atob(value), character => character.charCodeAt(0)).buffer;
 }
 
 function objectName(id: string): string {
@@ -538,9 +815,10 @@ async function readObject(
   if (root) {
     try {
       const handle = await nestedFile(root, path, false);
-      return (await handle.getFile()).arrayBuffer();
-    } catch {
-      return undefined;
+      return await (await handle.getFile()).arrayBuffer();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'NotFoundError') return undefined;
+      throw error;
     }
   }
   const value = await idbGet(FALLBACK_STORE, `${workspaceId}/${path}`);
@@ -556,8 +834,13 @@ async function writeObject(
   if (root) {
     const handle = await nestedFile(root, path, true);
     const writable = await handle.createWritable();
-    await writable.write(payload);
-    await writable.close();
+    try {
+      await writable.write(payload);
+      await writable.close();
+    } catch (error) {
+      try { await writable.abort(); } catch { /* Preserve the original write failure. */ }
+      throw error;
+    }
     return;
   }
   await idbPut(FALLBACK_STORE, `${workspaceId}/${path}`, payload);
@@ -623,34 +906,57 @@ async function idbGet(store: string, key: string): Promise<unknown> {
 async function idbPut(store: string, key: string, value: unknown): Promise<void> {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database.transaction(store, 'readwrite').objectStore(store).put(value, key);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(store, 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error('Local storage transaction aborted'));
+    transaction.objectStore(store).put(value, key);
   });
 }
 
 async function idbDelete(store: string, key: string): Promise<void> {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database.transaction(store, 'readwrite').objectStore(store).delete(key);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(store, 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error('Local storage transaction aborted'));
+    transaction.objectStore(store).delete(key);
   });
 }
 
+let databaseConnection: Promise<IDBDatabase> | undefined;
+
 async function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(KEY_STORE)) {
-        database.createObjectStore(KEY_STORE);
-      }
-      if (!database.objectStoreNames.contains(FALLBACK_STORE)) {
-        database.createObjectStore(FALLBACK_STORE);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  if (databaseConnection === undefined) {
+    databaseConnection = new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(KEY_STORE)) {
+          database.createObjectStore(KEY_STORE);
+        }
+        if (!database.objectStoreNames.contains(FALLBACK_STORE)) {
+          database.createObjectStore(FALLBACK_STORE);
+        }
+      };
+      request.onsuccess = () => {
+        const database = request.result;
+        const forget = () => {
+          databaseConnection = undefined;
+        };
+        database.onversionchange = () => {
+          database.close();
+          forget();
+        };
+        database.onclose = forget;
+        resolve(database);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    databaseConnection.catch(() => {
+      databaseConnection = undefined;
+    });
+  }
+  return databaseConnection;
 }

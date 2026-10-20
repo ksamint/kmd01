@@ -47,6 +47,7 @@ export type VaultSyncReport = {
   conflictRecords: ConflictRecord[];
   files: NoteFile[];
   attachments: AttachmentFile[];
+  commitSyncState: () => Promise<void>;
 };
 
 export async function syncWorkspaceToPrivateCloud({
@@ -54,22 +55,32 @@ export async function syncWorkspaceToPrivateCloud({
   workspaceName,
   files,
   attachments = [],
+  signal,
 }: {
   workspaceId: string;
   workspaceName: string;
   files: NoteFile[];
   attachments?: AttachmentFile[];
+  signal?: AbortSignal;
 }): Promise<VaultSyncReport> {
+  signal?.throwIfAborted();
   const identity = await loadOrCreateVaultIdentity(workspaceId);
   try {
+    signal?.throwIfAborted();
     const state = await loadVaultSyncState(workspaceId);
+    signal?.throwIfAborted();
     const vaultId = await resolveVaultID(state, workspaceName);
+    signal?.throwIfAborted();
     state.vaultId = vaultId;
     await saveVaultSyncState(workspaceId, state);
+    signal?.throwIfAborted();
     const deviceSession = await ensureVaultDeviceSession({ workspaceId, vaultId });
+    signal?.throwIfAborted();
     const remoteManifest = await latestManifest(vaultId, deviceSession.token);
+    signal?.throwIfAborted();
     if (!remoteManifest && !state.recoveryConfigured) {
       const setup = await prepareRecoveryPackage(workspaceId, vaultId);
+      signal?.throwIfAborted();
       throw new VaultRecoverySetupRequiredError(
         setup.recoveryPackage,
         setup.challenge,
@@ -89,7 +100,9 @@ export async function syncWorkspaceToPrivateCloud({
     let grant: TemporaryCosGrant | undefined;
     if (remoteManifest && remoteManifest.digest !== state.previousDigest) {
       grant = await requestTemporaryCosGrant(vaultId, deviceSession.token);
+      signal?.throwIfAborted();
       const catalog = await listVaultObjects(vaultId, deviceSession.token);
+      signal?.throwIfAborted();
       const remote = await loadRemoteSnapshot({
         vaultId,
         manifest: remoteManifest,
@@ -100,6 +113,7 @@ export async function syncWorkspaceToPrivateCloud({
         localAttachments: attachments,
         localState: state,
       });
+      signal?.throwIfAborted();
       const base = await loadBaseSnapshot({
         state,
         localFiles: files,
@@ -108,6 +122,7 @@ export async function syncWorkspaceToPrivateCloud({
         grant,
         masterKey: identity.masterKey,
       });
+      signal?.throwIfAborted();
       downloadedObjects = remote.downloadedObjects + base.downloadedObjects;
       const merged = mergeWorkspaceFiles({
         base: base.files,
@@ -124,8 +139,8 @@ export async function syncWorkspaceToPrivateCloud({
         sameWorkspace(workingFiles, remote.files)
         && sameAttachments(workingAttachments, remote.attachments)
       ) {
-        await saveVaultSyncState(workspaceId, remote.state);
         return {
+          commitSyncState: () => saveVaultSyncState(workspaceId, remote.state),
           vaultId,
           sequence: remoteManifest.sequence,
           uploadedObjects: 0,
@@ -143,6 +158,7 @@ export async function syncWorkspaceToPrivateCloud({
     const sequence = (remoteManifest?.sequence ?? 0) + 1;
     const previousDigest = remoteManifest?.digest;
     grant ??= await requestTemporaryCosGrant(vaultId, deviceSession.token);
+    signal?.throwIfAborted();
     const nextState: VaultSyncState = {
       vaultId,
       sequence,
@@ -155,12 +171,14 @@ export async function syncWorkspaceToPrivateCloud({
     const prepared = await mapConcurrent(sortedFiles, 4, async file => (
       prepareFile(identity.masterKey, file, parentState)
     ));
+    signal?.throwIfAborted();
     let uploadedObjects = 0;
     const entries: VaultManifestEntry[] = [];
     for (const item of prepared) {
       if (item.object) {
         const objectKey = `vaults/${vaultId}/objects/${item.versionId}`;
         await uploadCosObject(grant, objectKey, item.object);
+        signal?.throwIfAborted();
         await registerObject({
           vaultId,
           objectId: item.versionId,
@@ -169,6 +187,7 @@ export async function syncWorkspaceToPrivateCloud({
           digest: item.objectDigest,
           deviceToken: deviceSession.token,
         });
+        signal?.throwIfAborted();
         uploadedObjects += 1;
       }
       const encryptedPath = await sealVaultPath({
@@ -176,6 +195,7 @@ export async function syncWorkspaceToPrivateCloud({
         fileId: item.file.id,
         path: item.file.path,
       });
+      signal?.throwIfAborted();
       entries.push({
         fileId: item.file.id,
         currentVersionId: item.versionId,
@@ -217,12 +237,15 @@ export async function syncWorkspaceToPrivateCloud({
       identity.signingPrivateKey,
       identity.signingPublicKey,
     );
+    signal?.throwIfAborted();
     const digest = await sha256Hex(signedManifest);
+    signal?.throwIfAborted();
     await uploadCosObject(
       grant,
       `vaults/${vaultId}/manifests/${sequence}.cbor`,
       signedManifest,
     );
+    signal?.throwIfAborted();
     await uploadManifest({
       vaultId,
       sequence,
@@ -231,9 +254,10 @@ export async function syncWorkspaceToPrivateCloud({
       signedCbor: base64(signedManifest),
       deviceToken: deviceSession.token,
     });
+    signal?.throwIfAborted();
     nextState.previousDigest = digest;
-    await saveVaultSyncState(workspaceId, nextState);
     return {
+      commitSyncState: () => saveVaultSyncState(workspaceId, nextState),
       vaultId,
       sequence,
       uploadedObjects,

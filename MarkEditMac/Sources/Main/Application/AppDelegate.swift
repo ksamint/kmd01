@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       moduleFailedPrefix: Localized.Resource.moduleFailed
     ),
     catalogURL: URL(
-      string: "https://raw.githubusercontent.com/fengurt/ksa-MarkEdit/resource-modules/ResourceModules/dist/registry.json"
+      string: "https://raw.githubusercontent.com/ksamint/kmd01/resource-modules/ResourceModules/dist/registry.json"
     ),
     bundledModuleURLs: ["okf", "html-safe", "archive-base"].compactMap {
       Bundle.main.url(forResource: $0, withExtension: nil)
@@ -204,8 +204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if AppRuntimeConfig.autoSaveWhenIdle && NSDocumentController.shared.hasOutdatedDocuments {
       // Terminate after all outdated documents are saved
       Task {
-        await NSDocumentController.shared.saveOutdatedDocuments()
-        application.reply(toApplicationShouldTerminate: true)
+        let saved = await NSDocumentController.shared.saveOutdatedDocuments()
+        if !saved {
+          NSDocumentController.shared.editorDocuments.forEach { $0.isTerminating = false }
+        }
+        application.reply(toApplicationShouldTerminate: saved)
       }
 
       return .terminateLater
@@ -215,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    ActivityHistoryStore.shared.flush()
     EditorSelectionHistory.purgeStaleEntries()
     for url in activeResourceSecurityScopes {
       url.stopAccessingSecurityScopedResource()

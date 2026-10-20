@@ -38,6 +38,12 @@ requireText('MarkEdit.xcodeproj/project.pbxproj', 'path = "kmd.app";');
 requireText('MarkEditMac/Info.plist', '<string>ksamint-markedit</string>');
 requireText('Build.xcconfig', 'PRODUCT_BUNDLE_IDENTIFIER = art.apuch.ksamint.markedit$(BUNDLE_ID_SUFFIX)');
 requireText('MarkEditMac/Info.entitlements', '<string>group.art.apuch.ksamint-markedit</string>');
+for (const target of ['MarkEditMac', 'ConversationCaptureHelper', 'FinderExtension', 'QuickActionExtension']) {
+  const entitlements = `${target}/Info.entitlements`;
+  if (!/<key>com\.apple\.security\.files\.bookmarks\.app-scope<\/key>\s*<true\s*\/>/.test(read(entitlements))) {
+    throw new Error(`${entitlements} must enable persistent security-scoped bookmarks`);
+  }
+}
 requireText('MarkEditMac/Resources/art.apuch.ksamint-markedit.conversation-capture.plist', '<string>Contents/MacOS/kmd</string>');
 requireText('.github/workflows/release.yml', 'art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID');
 

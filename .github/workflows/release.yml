@@ -10,14 +10,45 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: signed-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Verify protected main and exact tested commit
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_REF: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require trusted exact-commit CI
+        id: commit
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin "refs/tags/$REQUESTED_REF"
+          commit="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          python3 Scripts/ci-release-gates.py trusted-build "$commit"
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')"
+          if printf '%s\n' "$tags" | grep -Fx "$REQUESTED_REF" >/dev/null; then
+            echo 'Release already exists; resume its persisted submissions instead.' >&2
+            exit 1
+          fi
+          printf 'sha=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
   release:
-    name: Sign, notarize, and publish
+    needs: preflight
+    if: github.ref == 'refs/heads/main'
+    name: Sign and submit a draft for acceptance
     runs-on: macos-26
     environment: release
     env:
@@ -34,7 +65,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.preflight.outputs.commit }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.19.0
@@ -162,11 +193,11 @@ jobs:
               base64 --decode > "$profiles/$uuid.provisionprofile"
             security cms -D -i "$profiles/$uuid.provisionprofile" >/dev/null
           done <<'PROFILES'
-          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID
-          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID
-          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID
+          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID 2.5.6
+          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID 2.5.6
+          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID 2.5.6
           art.apuch.ksamint.markedit.preview-extension|ksamint Preview Extension Developer ID
-          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID
+          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID 2.5.6
           PROFILES
           unset token
 
@@ -182,10 +213,8 @@ jobs:
           if lipo -archs "$RUNNER_TEMP/ksamint-vault" | grep -q x86_64; then exit 1; fi
           ditto -c -k "$RUNNER_TEMP/ksamint-vault" "$RUNNER_TEMP/ksamint-vault-macos-arm64.zip"
 
-      - name: Archive and export ARM64 app
+      - name: Archive and export Universal app
         run: |
-          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
           commit="$(git rev-parse HEAD)"
           xcodebuild archive \
             -project MarkEdit.xcodeproj \
@@ -193,11 +222,9 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/ksamint-MarkEdit.xcarchive" \
             -destination 'generic/platform=macOS' \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$key" \
-            -authenticationKeyID "$APPLE_NOTARY_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_NOTARY_ISSUER_ID" \
-            ARCHS=arm64 \
+            -xcconfig ReleaseSigning.xcconfig \
+            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID_SHA1" \
+            ARCHS="arm64 x86_64" VALID_ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
             KSAMINT_BUILD_COMMIT="$commit" \
             SWIFT_OPTIMIZATION_LEVEL="-Osize" \
@@ -216,22 +243,20 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$bundle_id string $profile_name" \
               "$RUNNER_TEMP/ExportOptions.plist"
           done <<'PROFILES'
-          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID
-          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID
-          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID
+          art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID 2.5.6
+          art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID 2.5.6
+          art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID 2.5.6
           art.apuch.ksamint.markedit.preview-extension|ksamint Preview Extension Developer ID
-          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID
+          art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID 2.5.6
           PROFILES
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/ksamint-MarkEdit.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
           Scripts/verify-release-app.sh \
-            "$RUNNER_TEMP/export/kmd.app" "$APPLE_TEAM_ID" "$commit"
+            "$RUNNER_TEMP/export/kmd.app" "$APPLE_TEAM_ID" "$commit" universal
 
-      - name: Create signed artifacts and submit each byte sequence once
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Create signed artifacts
         run: |
           version="${RELEASE_TAG#v}"
           commit="$(git rev-parse HEAD)"
@@ -247,29 +272,8 @@ jobs:
           echo "Signed UDBZ size: $dmg_size bytes (limit: 6291456)"
           test "$dmg_size" -le 6291456
 
-          notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$notary_key"
-          dmg_submission="$(xcrun notarytool submit "$dmg" \
-            --key "$notary_key" --key-id "$APPLE_NOTARY_KEY_ID" \
-            --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json)"
-          cli_submission="$(xcrun notarytool submit "$cli" \
-            --key "$notary_key" --key-id "$APPLE_NOTARY_KEY_ID" \
-            --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json)"
-          dmg_id="$(printf '%s' "$dmg_submission" | jq -r '.id')"
-          cli_id="$(printf '%s' "$cli_submission" | jq -r '.id')"
-          test -n "$dmg_id" && test "$dmg_id" != null
-          test -n "$cli_id" && test "$cli_id" != null
-
-          jq -n \
-            --arg tag "$RELEASE_TAG" --arg commit "$commit" --arg team "$APPLE_TEAM_ID" \
-            --arg dmgAsset "$(basename "$dmg")" --arg dmgSubmission "$dmg_id" \
-            --arg cliAsset "$(basename "$cli")" --arg cliSubmission "$cli_id" \
-            '{schema:1, tag:$tag, commit:$commit, teamID:$team,
-              dmg:{asset:$dmgAsset,submissionID:$dmgSubmission},
-              cli:{asset:$cliAsset,submissionID:$cliSubmission}}' \
-            > "$RUNNER_TEMP/NotarySubmission.json"
           jq -n --arg commit "$commit" \
-            '{minOSVer:"15.0",arch:"arm64",commit:$commit}' \
+            '{minOSVer:"15.0",arch:"universal",commit:$commit}' \
             > "$RUNNER_TEMP/ReleaseInfo.json"
           shasum -a 256 \
             "$dmg" "$cli" \
@@ -277,10 +281,51 @@ jobs:
             "$RUNNER_TEMP/ksamint-resource-modules-$version.zip" \
             > "$RUNNER_TEMP/SHA256SUMS.pre-notary"
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release already exists; refusing to replace submitted bytes." >&2
-            exit 1
-          fi
+      - name: Preserve exact signed bytes before contacting Apple
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-pre-notary-${{ inputs.tag }}
+          path: |
+            ${{ runner.temp }}/ksamint-MarkEdit-*.dmg
+            ${{ runner.temp }}/ksamint-vault-macos-arm64.zip
+            ${{ runner.temp }}/ksamint-agent-sdk-*.tgz
+            ${{ runner.temp }}/ksamint-resource-modules-*.zip
+            ${{ runner.temp }}/ReleaseInfo.json
+            ${{ runner.temp }}/SHA256SUMS.pre-notary
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Submit each byte sequence once and create an unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          commit="$(git rev-parse HEAD)"
+          dmg="$RUNNER_TEMP/ksamint-MarkEdit-$version.dmg"
+          cli="$RUNNER_TEMP/ksamint-vault-macos-arm64.zip"
+          notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$notary_key"
+          xcrun notarytool submit "$dmg" \
+            --key "$notary_key" --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json \
+            > "$RUNNER_TEMP/NotaryDMG.json"
+          dmg_id="$(jq -er '.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/NotaryDMG.json")"
+          xcrun notarytool submit "$cli" \
+            --key "$notary_key" --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" --output-format json \
+            > "$RUNNER_TEMP/NotaryCLI.json"
+          cli_id="$(jq -er '.id | select(type == "string" and length > 0)' "$RUNNER_TEMP/NotaryCLI.json")"
+
+          jq -n \
+            --arg tag "$RELEASE_TAG" --arg commit "$commit" --arg team "$APPLE_TEAM_ID" \
+            --arg dmgAsset "$(basename "$dmg")" --arg dmgSubmission "$dmg_id" \
+            --arg cliAsset "$(basename "$cli")" --arg cliSubmission "$cli_id" \
+            --arg dmgSHA256 "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
+            --arg cliSHA256 "$(shasum -a 256 "$cli" | awk '{print $1}')" \
+            '{schema:1, tag:$tag, commit:$commit, teamID:$team,
+              dmg:{asset:$dmgAsset,submissionID:$dmgSubmission,sha256:$dmgSHA256},
+              cli:{asset:$cliAsset,submissionID:$cliSubmission,sha256:$cliSHA256}}' \
+            > "$RUNNER_TEMP/NotarySubmission.json"
           gh release create "$RELEASE_TAG" \
             "$dmg" "$cli" \
             "$RUNNER_TEMP/ksamint-agent-sdk-$version.tgz" \
@@ -290,6 +335,18 @@ jobs:
             "$RUNNER_TEMP/SHA256SUMS.pre-notary" \
             --repo "$GITHUB_REPOSITORY" --title "$version" \
             --generate-notes --verify-tag --draft
+
+      - name: Preserve returned notarization submission IDs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notary-submissions-${{ inputs.tag }}
+          path: |
+            ${{ runner.temp }}/NotaryDMG.json
+            ${{ runner.temp }}/NotaryCLI.json
+            ${{ runner.temp }}/NotarySubmission.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Remove temporary signing material
         if: always()

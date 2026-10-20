@@ -8,10 +8,10 @@ puts <<~RUBY
     version "#{version}"
     sha256 "#{sha256}"
 
-    url "https://github.com/fengurt/ksa-MarkEdit/releases/download/v\#{version}/ksamint-MarkEdit-\#{version}.dmg"
+    url "https://github.com/ksamint/kmd01/releases/download/v\#{version}/ksamint-MarkEdit-\#{version}.dmg"
     name "kmd"
     desc "Fast, native Markdown editor with Chinese, Japanese, and French support"
-    homepage "https://github.com/fengurt/ksa-MarkEdit"
+    homepage "https://github.com/ksamint/kmd01"
 
     livecheck do
       url :url
@@ -19,7 +19,6 @@ puts <<~RUBY
     end
 
     depends_on macos: :sequoia
-    depends_on arch: :arm64
 
     app "kmd.app"
 

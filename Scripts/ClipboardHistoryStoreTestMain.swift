@@ -15,20 +15,32 @@ private enum ClipboardHistoryTestError: Error {
   case failed(String)
 }
 
-// swiftlint:disable convenience_type
 @main
 @MainActor
-private struct ClipboardHistoryStoreTestMain {
+private enum ClipboardHistoryStoreTestMain {
   static func main() throws {
+    try testFileProtectionCapabilities()
     let root = FileManager.default.temporaryDirectory
       .appending(path: "kmd-clipboard-history-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+    print("Clipboard test volume supports file protection: \(try ClipboardFileProtection.volumeSupportsProtection(root) as Any)")
 
     let key = SymmetricKey(size: .bits256)
+    try testHistoryMetadata(root: root, key: key)
+    try testLegacyRecovery(root: root, key: key)
+    try testCapacity(root: root, key: key)
+    try testSourceContext()
+    print("Clipboard history store tests passed.")
+  }
+}
+
+private extension ClipboardHistoryStoreTestMain {
+  static func testHistoryMetadata(root: URL, key: SymmetricKey) throws {
     let archiveURL = root.appending(path: "history.ksc")
     var store = ClipboardHistoryStore(fileURL: archiveURL, key: key)
-    try expect(store.record(content: "ACME invoice 1001", sourceName: "Tests", sourceBundleID: nil, hasFiles: false), "records content")
+    let recorded = store.record(content: "ACME invoice 1001", sourceName: "Tests", sourceBundleID: nil, hasFiles: false)
+    try expect(recorded, "records content; persistence=\(store.lastPersistenceFailure ?? "none")")
     let journalPermissions = try FileManager.default.attributesOfItem(atPath: archiveURL.path)[.posixPermissions] as? NSNumber
     try expect(journalPermissions?.intValue == 0o600, "protects the encrypted journal from other local users")
     let invoice = try unwrap(store.createTag(named: " 发票信息 "), "creates a label")
@@ -74,8 +86,8 @@ private struct ClipboardHistoryStoreTestMain {
     let journalSizeBeforeClear = try Data(contentsOf: archiveURL).count
     store.clear()
     try expect(store.items.count == 2, "keeps permanent clipboard knowledge when recent history is cleared")
-    try expect(store.items.contains(where: { $0.id == permanent.id }), "keeps the automatic permanent record")
-    try expect(store.items.contains(where: { $0.id == itemID }), "keeps the favorited record")
+    try expect(store.items.contains { $0.id == permanent.id }, "keeps the automatic permanent record")
+    try expect(store.items.contains { $0.id == itemID }, "keeps the favorited record")
     try expect(store.tags.map(\.name) == ["常用 Command"], "keeps user labels when history is cleared")
     let journalSizeAfterClear = try Data(contentsOf: archiveURL).count
     try expect(journalSizeAfterClear < journalSizeBeforeClear, "physically compacts cleared recent history")
@@ -91,13 +103,13 @@ private struct ClipboardHistoryStoreTestMain {
     let companyTag = try unwrap(store.createTag(named: "公司信息"), "creates a global classification")
     try expect(store.toggleTag(companyTag.id, for: classifiedID) == true, "classifies the item")
     try expect(
-      store.items.first(where: { $0.id == classifiedID })?.isPermanent == true,
+      store.items.first { $0.id == classifiedID }?.isPermanent == true,
       "classifying a record makes it permanent"
     )
     try expect(store.togglePermanent(itemID: classifiedID) == true, "does not disable retention for labeled records")
     try expect(store.togglePinned(itemID: classifiedID) == true, "favorites the item")
     try expect(
-      store.items.first(where: { $0.id == classifiedID })?.isPermanent == true,
+      store.items.first { $0.id == classifiedID }?.isPermanent == true,
       "favoriting a record makes it permanent"
     )
 
@@ -109,24 +121,28 @@ private struct ClipboardHistoryStoreTestMain {
     )
     try expect(export.written >= 2, "exports permanent clipboard knowledge as Markdown")
     let clipboardRoot = knowledgeRoot.appending(path: "Clipboard", directoryHint: .isDirectory)
-    let exportedAtRoot = try FileManager.default.contentsOfDirectory(
+    let clipboardRootEntries = try FileManager.default.contentsOfDirectory(
       at: clipboardRoot,
       includingPropertiesForKeys: nil,
       options: [.skipsHiddenFiles]
-    ).filter { $0.pathExtension == "md" }
+    )
+    let exportedAtRoot = clipboardRootEntries.filter { $0.pathExtension == "md" }
     try expect(
       exportedAtRoot.map(\.lastPathComponent) == ["Labels.md"],
       "stores only the global label catalog at the Clipboard root"
     )
+    let exportedMarkdown = recursiveMarkdownFiles(at: knowledgeRoot)
+      .compactMap { try? String(contentsOf: $0, encoding: .utf8) }
     let classifiedMarkdown = try unwrap(
-      recursiveMarkdownFiles(at: knowledgeRoot).compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-        .first(where: { $0.contains("clipboard_id: \(classifiedID)") }),
+      exportedMarkdown.first { $0.contains("clipboard_id: \(classifiedID)") },
       "exports the classified record"
     )
     try expect(classifiedMarkdown.contains("tags: [\"clipboard\", \"公司信息\"]"), "exports global labels")
     try expect(classifiedMarkdown.contains("favorite: true"), "exports favorite metadata")
     try expect(classifiedMarkdown.contains(classified), "exports original content without conversion")
+  }
 
+  static func testLegacyRecovery(root: URL, key: SymmetricKey) throws {
     let legacyURL = root.appending(path: "legacy.ksc")
     let legacy = LegacyClipboardItem(
       id: "legacy",
@@ -191,7 +207,7 @@ private struct ClipboardHistoryStoreTestMain {
     ), "appends after trimming a truncated tail")
     let recoveredAgain = ClipboardHistoryStore(fileURL: migratedJournalURL, key: key)
     try expect(
-      recoveredAgain.items.contains(where: { $0.content == "recorded after truncated tail recovery" }),
+      recoveredAgain.items.contains { $0.content == "recorded after truncated tail recovery" },
       "replays records appended after truncated-tail recovery"
     )
 
@@ -202,7 +218,11 @@ private struct ClipboardHistoryStoreTestMain {
     try expect(corrupt.items.isEmpty, "does not replace a corrupt v2 journal with stale legacy data")
     let preservedCorruptBytes = try Data(contentsOf: corruptURL)
     try expect(preservedCorruptBytes == corruptBytes, "preserves a corrupt journal for recovery")
+  }
+}
 
+private extension ClipboardHistoryStoreTestMain {
+  static func testCapacity(root: URL, key: SymmetricKey) throws {
     let capacityURL = root.appending(path: "capacity.ksj")
     let capacityStore = ClipboardHistoryStore(fileURL: capacityURL, key: key)
     for index in 0 ... ClipboardHistoryStore.maximumRecentItems {
@@ -220,7 +240,9 @@ private struct ClipboardHistoryStoreTestMain {
 
     let reloadedCapacity = ClipboardHistoryStore(fileURL: capacityURL, key: key)
     try expect(reloadedCapacity.items.count == ClipboardHistoryStore.maximumRecentItems, "replays the 10,000-item journal")
+  }
 
+  static func testSourceContext() throws {
     let pasteboard = NSPasteboard(name: NSPasteboard.Name("kmd-source-context-tests"))
     let sourceType = NSPasteboard.PasteboardType("org.chromium.source-url")
     let titleType = NSPasteboard.PasteboardType("org.chromium.source-title")
@@ -231,23 +253,81 @@ private struct ClipboardHistoryStoreTestMain {
     try expect(context.sourceURL == "https://example.com/chat/7", "reads the clipboard source URL")
     try expect(context.sessionName == "Claude planning session", "reads the clipboard session name")
     try expect(ClipboardHistoryStore.sanitizedSourceURL("javascript:alert(1)") == nil, "rejects unsafe source URLs")
-
-    print("Clipboard history store tests passed.")
   }
 
-  private static func expect(
+  static func expect(
     _ condition: @autoclosure () -> Bool,
     _ message: String
   ) throws {
     if !condition() { throw ClipboardHistoryTestError.failed(message) }
   }
 
-  private static func unwrap<Value>(_ value: Value?, _ message: String) throws -> Value {
+  static func testFileProtectionCapabilities() throws {
+    let url = URL(fileURLWithPath: "/unused-journal-test")
+    for supported: Bool? in [false, true, nil] {
+      var writes = [[FileAttributeKey: Any]]()
+      let options = try ClipboardFileProtection.atomicWriteOptions(for: url) { _ in supported }
+      try expect(options.contains(.atomic), "writes remain atomic on every volume")
+      try expect(
+        options.contains(.completeFileProtectionUnlessOpen) == (supported != false),
+        "atomic writes only omit protection on explicitly unsupported volumes"
+      )
+      try ClipboardFileProtection.apply(
+        to: url,
+        supportsProtection: { _ in supported },
+        setAttributes: { attributes, _ in writes.append(attributes) }
+      )
+      try expect(writes.first?[.posixPermissions] as? Int == 0o600, "always requires owner-only permissions")
+      try expect(writes.count == (supported == false ? 1 : 2), "only explicitly unsupported volumes omit file protection")
+      if supported != false {
+        try expect(
+          writes.last?[.protectionKey] as? FileProtectionType == .completeUnlessOpen,
+          "supported or unknown volumes require file protection"
+        )
+      }
+    }
+    for supported in [false, true] {
+      do {
+        try ClipboardFileProtection.apply(
+          to: url,
+          supportsProtection: { _ in supported },
+          setAttributes: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        )
+        throw ClipboardHistoryTestError.failed("must propagate permission failures")
+      } catch let error as CocoaError {
+        try expect(error.code == .fileWriteNoPermission, "preserves permission failure")
+      }
+    }
+    do {
+      try ClipboardFileProtection.apply(
+        to: url,
+        supportsProtection: { _ in true },
+        setAttributes: { attributes, _ in
+          if attributes[.protectionKey] != nil { throw CocoaError(.fileWriteUnknown) }
+        }
+      )
+      throw ClipboardHistoryTestError.failed("must propagate supported protection failures")
+    } catch let error as CocoaError {
+      try expect(error.code == .fileWriteUnknown, "preserves protection failure")
+    }
+    do {
+      try ClipboardFileProtection.apply(
+        to: url,
+        supportsProtection: { _ in throw CocoaError(.fileReadUnknown) },
+        setAttributes: { _, _ in }
+      )
+      throw ClipboardHistoryTestError.failed("must propagate capability lookup failures")
+    } catch let error as CocoaError {
+      try expect(error.code == .fileReadUnknown, "preserves capability lookup failure")
+    }
+  }
+
+  static func unwrap<Value>(_ value: Value?, _ message: String) throws -> Value {
     guard let value else { throw ClipboardHistoryTestError.failed(message) }
     return value
   }
 
-  private static func recursiveMarkdownFiles(at root: URL) -> [URL] {
+  static func recursiveMarkdownFiles(at root: URL) -> [URL] {
     guard let enumerator = FileManager.default.enumerator(
       at: root,
       includingPropertiesForKeys: [.isRegularFileKey],
@@ -256,7 +336,7 @@ private struct ClipboardHistoryStoreTestMain {
     return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "md" }
   }
 
-  private static func writeJournal(
+  static func writeJournal(
     _ events: [ClipboardHistoryJournalEvent],
     to url: URL,
     key: SymmetricKey
@@ -270,4 +350,3 @@ private struct ClipboardHistoryStoreTestMain {
     try data.write(to: url)
   }
 }
-// swiftlint:enable convenience_type

@@ -67,17 +67,13 @@ extension EditorViewController {
     if workspaceSession == nil,
       let fileURL = document?.fileURL,
       let bookmark = AppPreferences.General.workspaceFolderBookmarks[
-        fileURL.standardizedFileURL.path],
-      let restoredSession = try? WorkspaceSession.restore(from: bookmark),
-      restoredSession.contains(fileURL) {
-      workspaceSession = restoredSession
+        fileURL.standardizedFileURL.path] {
+      restoreWorkspaceSession(bookmark, for: fileURL)
     }
 
     if workspaceSession == nil,
-      let bookmark = AppPreferences.General.workspaceFolderBookmark,
-      let restoredSession = try? WorkspaceSession.restore(from: bookmark),
-      document?.fileURL.map({ restoredSession.contains($0) }) != false {
-      workspaceSession = restoredSession
+      let bookmark = AppPreferences.General.workspaceFolderBookmark {
+      restoreWorkspaceSession(bookmark, for: document?.fileURL)
     }
 
     if let workspaceSession, let fileURL = document?.fileURL {
@@ -159,18 +155,21 @@ extension EditorViewController {
   func ensureWorkspaceSidebar() {
     guard workspaceSidebarView == nil else {
       workspaceSidebarView?.session = workspaceSession
+      workspaceSidebarView?.restorationIssue = workspaceRestorationIssue
       return
     }
 
     let sidebar = WorkspaceSidebarView(frame: .zero)
     sidebar.mode = workspaceSidebarMode
     sidebar.session = workspaceSession
+    sidebar.restorationIssue = workspaceRestorationIssue
     sidebar.onModeSelected = { [weak self] mode in
       self?.toggleWorkspaceSidebar(mode)
     }
     sidebar.onChooseWorkspace = { [weak self] in
       self?.chooseWorkspaceFolder()
     }
+    sidebar.onRetryWorkspace = { [weak self] in self?.retryWorkspaceRestoration() }
     sidebar.onOpenResult = { [weak self] url, lineNumber in
       self?.openWorkspaceFile(url, lineNumber: lineNumber)
     }

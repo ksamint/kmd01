@@ -116,6 +116,8 @@ public actor LocalAgentBridge {
 
   private let eventContinuation: AsyncStream<LocalAgentEvent>.Continuation
   private var process: Process?
+  private var sessionID = UUID()
+  private var requestID = UUID()
   private var inputHandle: FileHandle?
   private var outputTask: Task<Void, Never>?
   private var errorTask: Task<Void, Never>?
@@ -141,22 +143,8 @@ public actor LocalAgentBridge {
     outputTask?.cancel()
     errorTask?.cancel()
     if let process, process.isRunning {
-      process.terminate()
+      Self.terminate(process, processGroupCreated: processGroupCreated)
     }
-  }
-
-  public static func detectProviders() async -> [LocalAgentProviderStatus] {
-    let task = Task.detached(priority: .utility) {
-      LocalAgentProviderID.allCases.map { provider in
-        let executable = executableURL(for: provider)
-        return LocalAgentProviderStatus(
-          provider: provider,
-          executableURL: executable,
-          version: executable.flatMap { version(of: $0) }
-        )
-      }
-    }
-    return await task.value
   }
 
   public func start(
@@ -188,38 +176,39 @@ public actor LocalAgentBridge {
     process.standardInput = input
     process.standardOutput = output
     process.standardError = error
+    let sessionID = self.sessionID
+    process.terminationHandler = { [weak self] process in
+      Task {
+        await self?.processTerminated(status: process.terminationStatus, sessionID: sessionID)
+      }
+    }
     try process.run()
 
     self.provider = provider
     self.process = process
     self.inputHandle = input.fileHandleForWriting
-    self.processGroupCreated = setpgid(process.processIdentifier, process.processIdentifier) == 0
-    process.terminationHandler = { [weak self] process in
-      Task {
-        await self?.processTerminated(status: process.terminationStatus)
-      }
+    self.processGroupCreated = getpgid(process.processIdentifier) == process.processIdentifier
+      || setpgid(process.processIdentifier, process.processIdentifier) == 0
+    let inputDescriptor = input.fileHandleForWriting.fileDescriptor
+    guard fcntl(inputDescriptor, F_SETFL, fcntl(inputDescriptor, F_GETFL) | O_NONBLOCK) == 0 else {
+      stop()
+      throw BridgeFailure.disconnected
     }
     outputTask = Task.detached(priority: .userInitiated) { [weak self] in
-      guard let bridge = self else {
-        return
-      }
       do {
-        try await Self.readLines(from: output.fileHandleForReading) { line in
-          await bridge.handleOutputLine(line)
+        try await Self.readLines(from: output.fileHandleForReading) { [weak self] line in
+          await self?.handleOutputLine(line, sessionID: sessionID)
         }
       } catch {
         if !Task.isCancelled {
-          await bridge.emit(.error("Agent output stream failed."))
+          await self?.outputFailed(sessionID: sessionID)
         }
       }
     }
     errorTask = Task.detached(priority: .utility) { [weak self] in
-      guard let bridge = self else {
-        return
-      }
       do {
-        try await Self.readLines(from: error.fileHandleForReading) { line in
-          await bridge.recordStandardError(line)
+        try await Self.readLines(from: error.fileHandleForReading) { [weak self] line in
+          await self?.recordStandardError(line, sessionID: sessionID)
         }
       } catch {
         // The pipe normally closes when the provider exits.
@@ -236,6 +225,7 @@ public actor LocalAgentBridge {
             "version": .string(applicationVersion),
           ]),
         ]))
+        guard self.sessionID == sessionID else { throw BridgeFailure.disconnected }
         try write(.object(["method": .string("initialized"), "params": .object([:])]))
         let response = try await request(method: "thread/start", params: .object([
           "cwd": .string(workspaceURL.path),
@@ -243,6 +233,7 @@ public actor LocalAgentBridge {
           "sandbox": .string("read-only"),
           "serviceName": .string("ksamint_markedit"),
         ]))
+        guard self.sessionID == sessionID else { throw BridgeFailure.disconnected }
         guard let threadID = response["thread"]?["id"]?.stringValue else {
           throw BridgeFailure.invalidResponse
         }
@@ -251,9 +242,10 @@ public actor LocalAgentBridge {
         break
       }
     } catch {
-      stop()
+      if self.sessionID == sessionID { stop() }
       throw error
     }
+    guard self.sessionID == sessionID else { throw BridgeFailure.disconnected }
     emit(.status("Connected to \(provider.displayName). Read-only workspace policy is active."))
   }
 
@@ -265,6 +257,8 @@ public actor LocalAgentBridge {
       throw BridgeFailure.busy
     }
     isBusy = true
+    requestID = UUID()
+    let sessionID = self.sessionID
     emittedCodexDelta = false
     do {
       switch provider {
@@ -281,6 +275,7 @@ public actor LocalAgentBridge {
             ]),
           ]),
         ]))
+        guard self.sessionID == sessionID else { throw BridgeFailure.disconnected }
         turnID = response["turn"]?["id"]?.stringValue
       case .claude:
         try write(.object([
@@ -297,7 +292,7 @@ public actor LocalAgentBridge {
         ]))
       }
     } catch {
-      isBusy = false
+      if self.sessionID == sessionID { isBusy = false }
       throw error
     }
   }
@@ -342,22 +337,24 @@ public actor LocalAgentBridge {
         "request": .object(["subtype": .string("interrupt")]),
       ]))
     }
-    let activeTurn = turnID
+    let activeRequest = requestID
+    let activeSession = sessionID
     Task { [weak self] in
       try? await Task.sleep(for: .seconds(2))
-      await self?.terminateIfStillBusy(turnID: activeTurn)
+      await self?.terminateIfStillBusy(requestID: activeRequest, sessionID: activeSession)
     }
   }
 
   public func stop() {
+    sessionID = UUID()
     outputTask?.cancel()
     errorTask?.cancel()
     outputTask = nil
     errorTask = nil
-    inputHandle?.closeFile()
+    try? inputHandle?.close()
     inputHandle = nil
     if let process, process.isRunning {
-      terminate(process)
+      Self.terminate(process, processGroupCreated: processGroupCreated)
     }
     process = nil
     provider = nil
@@ -369,6 +366,18 @@ public actor LocalAgentBridge {
     }
     pending.removeAll()
     approvals.removeAll()
+  }
+}
+
+extension LocalAgentBridge {
+  public static func detectProviders() async -> [LocalAgentProviderStatus] {
+    var statuses = [LocalAgentProviderStatus]()
+    for provider in LocalAgentProviderID.allCases {
+      let executable = executableURL(for: provider)
+      let version = if let executable { await version(of: executable) } else { nil as String? }
+      statuses.append(LocalAgentProviderStatus(provider: provider, executableURL: executable, version: version))
+    }
+    return statuses
   }
 }
 
@@ -478,39 +487,56 @@ private extension LocalAgentBridge {
     from handle: FileHandle,
     consume: @escaping @Sendable (String) async -> Void
   ) async throws {
-    var pending = Data()
-    var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-    while !Task.isCancelled {
-      let count = buffer.withUnsafeMutableBytes { bytes in
-        Darwin.read(handle.fileDescriptor, bytes.baseAddress, bytes.count)
-      }
-      if count < 0 {
-        if errno == EINTR {
-          continue
+    // Independent blocking readers prevent a quiet stderr pipe from delaying stdout.
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      Thread {
+        defer { try? handle.close() }
+        do {
+          var buffer = Data()
+          var bytes = [UInt8](repeating: 0, count: 64 * 1024)
+          while true {
+            let count = Darwin.read(handle.fileDescriptor, &bytes, bytes.count)
+            if count < 0 {
+              if errno == EINTR { continue }
+              throw BridgeFailure.disconnected
+            }
+            if count > 0 { buffer.append(bytes, count: count) }
+            while let newline = buffer.firstIndex(of: 0x0A) {
+              guard buffer.distance(from: buffer.startIndex, to: newline) <= 8 * 1024 * 1024 else {
+                throw BridgeFailure.invalidResponse
+              }
+              guard let line = String(bytes: buffer[..<newline], encoding: .utf8) else {
+                throw BridgeFailure.invalidResponse
+              }
+              buffer.removeSubrange(...newline)
+              let delivered = DispatchSemaphore(value: 0)
+              Task {
+                await consume(line)
+                delivered.signal()
+              }
+              delivered.wait()
+            }
+            guard buffer.count <= 8 * 1024 * 1024 else { throw BridgeFailure.invalidResponse }
+            if count == 0 {
+              if !buffer.isEmpty {
+                guard let line = String(bytes: buffer, encoding: .utf8) else {
+                  throw BridgeFailure.invalidResponse
+                }
+                let delivered = DispatchSemaphore(value: 0)
+                Task {
+                  await consume(line)
+                  delivered.signal()
+                }
+                delivered.wait()
+              }
+              break
+            }
+          }
+          continuation.resume()
+        } catch {
+          continuation.resume(throwing: error)
         }
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-      }
-      guard count > 0 else {
-        break
-      }
-      pending.append(buffer, count: count)
-      while let newline = pending.firstIndex(of: 0x0A) {
-        var line = Data(pending[..<newline])
-        pending.removeSubrange(...newline)
-        if line.last == 0x0D {
-          line.removeLast()
-        }
-        guard let value = String(data: line, encoding: .utf8) else {
-          throw BridgeFailure.invalidResponse
-        }
-        await consume(value)
-      }
-    }
-    if !Task.isCancelled, !pending.isEmpty {
-      guard let value = String(data: pending, encoding: .utf8) else {
-        throw BridgeFailure.invalidResponse
-      }
-      await consume(value)
+      }.start()
     }
   }
 
@@ -526,8 +552,7 @@ private extension LocalAgentBridge {
           "params": params,
         ]))
       } catch {
-        pending.removeValue(forKey: identifier)
-        continuation.resume(throwing: error)
+        pending.removeValue(forKey: identifier)?.resume(throwing: error)
       }
       Task { [weak self] in
         try? await Task.sleep(for: .seconds(30))
@@ -549,10 +574,30 @@ private extension LocalAgentBridge {
     }
     var data = try JSONEncoder().encode(value)
     data.append(0x0A)
-    try inputHandle.write(contentsOf: data)
+    do {
+      try data.withUnsafeBytes { bytes in
+        guard let base = bytes.baseAddress else { return }
+        var offset = 0
+        while offset < bytes.count {
+          let count = Darwin.write(inputHandle.fileDescriptor, base.advanced(by: offset), bytes.count - offset)
+          if count < 0, errno == EINTR { continue }
+          guard count > 0 else {
+            throw BridgeFailureMessage("Agent CLI stopped accepting input. Reconnect and retry the request.")
+          }
+          offset += count
+        }
+      }
+    } catch {
+      // A partial JSONL write cannot be retried on the same protocol session.
+      for continuation in pending.values { continuation.resume(throwing: error) }
+      pending.removeAll()
+      stop()
+      throw error
+    }
   }
 
-  func handleOutputLine(_ line: String) {
+  func handleOutputLine(_ line: String, sessionID: UUID) {
+    guard self.sessionID == sessionID else { return }
     guard let data = line.data(using: .utf8),
           let value = try? JSONDecoder().decode(JSONValue.self, from: data),
           let object = value.objectValue else {
@@ -560,7 +605,7 @@ private extension LocalAgentBridge {
         emit(.error("Agent CLI returned non-protocol output. Sign in with the CLI in Terminal, then reconnect."))
         isBusy = false
         if let process, process.isRunning {
-          terminate(process)
+          Self.terminate(process, processGroupCreated: processGroupCreated)
         }
       }
       return
@@ -714,7 +759,8 @@ private extension LocalAgentBridge {
     }
   }
 
-  func processTerminated(status: Int32) {
+  func processTerminated(status: Int32, sessionID: UUID) {
+    guard self.sessionID == sessionID else { return }
     if process != nil {
       let detail = stderrRing.isEmpty ? "" : " \(stderrRing.suffix(500))"
       if status != 0 {
@@ -724,7 +770,9 @@ private extension LocalAgentBridge {
       }
     }
     process = nil
+    try? inputHandle?.close()
     inputHandle = nil
+    approvals.removeAll()
     isBusy = false
     for continuation in pending.values {
       continuation.resume(throwing: BridgeFailure.disconnected)
@@ -732,7 +780,14 @@ private extension LocalAgentBridge {
     pending.removeAll()
   }
 
-  func recordStandardError(_ line: String) {
+  func outputFailed(sessionID: UUID) {
+    guard self.sessionID == sessionID else { return }
+    stop()
+    emit(.error("Agent output stream failed."))
+  }
+
+  func recordStandardError(_ line: String, sessionID: UUID) {
+    guard self.sessionID == sessionID else { return }
     let redacted = Self.redact(line)
     stderrRing.append(redacted)
     stderrRing.append("\n")
@@ -744,39 +799,28 @@ private extension LocalAgentBridge {
     }
   }
 
-  func terminateIfStillBusy(turnID: String?) {
-    guard isBusy, self.turnID == turnID || provider == .claude else {
+  func terminateIfStillBusy(requestID: UUID, sessionID: UUID) {
+    guard isBusy, self.requestID == requestID, self.sessionID == sessionID else {
       return
     }
     if let process, process.isRunning {
-      terminate(process)
-      Task { [weak self] in
-        try? await Task.sleep(for: .seconds(1))
-        await self?.forceTerminateIfRunning(process)
-      }
+      Self.terminate(process, processGroupCreated: processGroupCreated)
     }
     isBusy = false
     emit(.status("Agent request cancelled."))
   }
 
-  func terminate(_ process: Process) {
+  static func terminate(_ process: Process, processGroupCreated: Bool) {
     let processID = process.processIdentifier
-    if processGroupCreated, getpgid(processID) == processID {
-      Darwin.kill(-processID, SIGTERM)
-    } else {
-      process.terminate()
-    }
-  }
-
-  func forceTerminateIfRunning(_ process: Process) {
-    guard process.isRunning else {
-      return
-    }
-    let processID = process.processIdentifier
-    if processGroupCreated, getpgid(processID) == processID {
-      Darwin.kill(-processID, SIGKILL)
-    } else {
-      Darwin.kill(processID, SIGKILL)
+    let hasGroup = processGroupCreated && getpgid(processID) == processID
+    Darwin.kill(hasGroup ? -processID : processID, SIGTERM)
+    Task.detached {
+      try? await Task.sleep(for: .seconds(1))
+      if hasGroup {
+        Darwin.kill(-processID, SIGKILL)
+      } else if process.isRunning {
+        Darwin.kill(processID, SIGKILL)
+      }
     }
   }
 
@@ -822,29 +866,13 @@ private extension LocalAgentBridge {
     return nil
   }
 
-  static func version(of executableURL: URL) -> String? {
-    let process = Process()
-    let output = Pipe()
-    process.executableURL = executableURL
-    process.arguments = ["--version"]
-    process.standardOutput = output
-    process.standardError = FileHandle.nullDevice
-    let semaphore = DispatchSemaphore(value: 0)
-    process.terminationHandler = { _ in semaphore.signal() }
-    do {
-      try process.run()
-      guard semaphore.wait(timeout: .now() + 3) == .success else {
-        process.terminate()
-        return nil
-      }
-      guard process.terminationStatus == 0 else {
-        return nil
-      }
-      let data = output.fileHandleForReading.readDataToEndOfFile()
-      return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    } catch {
+  static func version(of executableURL: URL) async -> String? {
+    guard let output = try? await ProcessOutput.run(
+      executableURL: executableURL, arguments: ["--version"], timeout: 3, maximumBytes: 4096
+    ), output.status == 0 else {
       return nil
     }
+    return String(data: output.standardOutput, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 }
 

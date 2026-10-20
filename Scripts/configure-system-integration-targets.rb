@@ -42,8 +42,8 @@ def configure(target, bundle_id, plist, entitlements, product_name)
     settings['SDKROOT'] = 'macosx'
     settings['SWIFT_VERSION'] = '6.0'
     settings['SKIP_INSTALL'] = 'YES'
-    settings['MARKETING_VERSION'] = '2.5.4'
-    settings['CURRENT_PROJECT_VERSION'] = '17'
+    settings['MARKETING_VERSION'] = '2.5.6'
+    settings['CURRENT_PROJECT_VERSION'] = '19'
     settings['CODE_SIGN_STYLE'] = 'Automatic'
   end
 end
@@ -145,6 +145,23 @@ end
 main.copy_files_build_phases.select { |phase| phase.name == 'Embed Conversation Capture Agent' }.each do |phase|
   main.build_phases.delete(phase)
   phase.remove_from_project
+end
+
+shared_group = project.main_group.find_subpath('Shared', false) || project.main_group.new_group('Shared', 'Shared')
+shared_source = shared_group.files.find { |file| file.path == 'WorkspaceBookmarkAccess.swift' }
+shared_source ||= shared_group.new_file('WorkspaceBookmarkAccess.swift')
+[main, helper, quick, project.targets.find { |target| target.name == 'FinderExtension' }].compact.each do |target|
+  unless target.source_build_phase.files_references.include?(shared_source)
+    target.source_build_phase.add_file_reference(shared_source)
+  end
+end
+
+# Opt-in CI signing profiles remain empty for ordinary development builds.
+%w[MarkEditMac ConversationCaptureHelper FinderExtension PreviewExtension QuickActionExtension].each do |name|
+  target = project.targets.find { |candidate| candidate.name == name } or abort "#{name} target missing"
+  target.build_configurations.each do |configuration|
+    configuration.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = "$(KSAMINT_PROFILE_#{name})"
+  end
 end
 
 project.save

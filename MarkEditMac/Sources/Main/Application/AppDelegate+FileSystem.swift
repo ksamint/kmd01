@@ -80,20 +80,22 @@ extension AppDelegate {
       var isStale = false
       let url = try URL(
         resolvingBookmarkData: bookmark,
-        options: [.withSecurityScope],
+        options: [.withSecurityScope, .withoutUI],
         relativeTo: nil,
         bookmarkDataIsStale: &isStale
       )
       guard url.startAccessingSecurityScopedResource() else {
         throw CocoaError(.fileReadNoPermission)
       }
-      activeResourceSecurityScopes.append(url)
+      if activeResourceSecurityScopes.contains(url) {
+        url.stopAccessingSecurityScopedResource()
+      } else {
+        activeResourceSecurityScopes.append(url)
+      }
       Task {
         await openResourceURL(url, tabbingWindow: NSApp.keyWindow)
       }
     } catch {
-      AppPreferences.General.recentResourceBookmarks.removeAll { $0 == bookmark }
-      refreshRecentResourcesMenu()
       let alert = NSAlert(error: error)
       alert.messageText = Localized.Resource.openFailed
       alert.runModal()
@@ -198,8 +200,8 @@ private extension AppDelegate {
         options: [.withoutUI],
         relativeTo: nil,
         bookmarkDataIsStale: &isStale
-      ), !isStale else {
-        return false
+      ) else {
+        return true
       }
       return existingURL.standardizedFileURL != url.standardizedFileURL
     }
@@ -221,7 +223,7 @@ private extension AppDelegate {
         options: [.withoutUI],
         relativeTo: nil,
         bookmarkDataIsStale: &isStale
-      ), !isStale else {
+      ) else {
         continue
       }
       let item = NSMenuItem(
@@ -255,13 +257,30 @@ private extension AppDelegate {
       var isStale = false
       let bookmarkURL = try URL(
         resolvingBookmarkData: bookmarkData,
-        options: .withSecurityScope,
+        options: [.withSecurityScope, .withoutUI],
         relativeTo: nil,
         bookmarkDataIsStale: &isStale
       )
 
-      if !bookmarkURL.startAccessingSecurityScopedResource() {
-        Logger.log(.error, "Failed to start accessing security scoped resource")
+      guard bookmarkURL.startAccessingSecurityScopedResource() else {
+        return Logger.log(.error, "Saved folder access is unavailable; the bookmark was retained")
+      }
+      if activeResourceSecurityScopes.contains(bookmarkURL) {
+        bookmarkURL.stopAccessingSecurityScopedResource()
+      } else {
+        activeResourceSecurityScopes.append(bookmarkURL)
+      }
+      if isStale, let refreshed = try? bookmarkURL.bookmarkData(
+        options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil
+      ), let saved = AppPreferences.General.grantedFolderBookmark {
+        if let list = saved.decodeToDataArray() {
+          AppPreferences.General.grantedFolderBookmark = list.map {
+            $0 == bookmarkData ? refreshed : $0
+          }
+          .encodeToData()
+        } else if saved == bookmarkData {
+          AppPreferences.General.grantedFolderBookmark = refreshed
+        }
       }
     } catch {
       Logger.log(.error, "Failed to resolve bookmark data")

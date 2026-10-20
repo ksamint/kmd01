@@ -1,5 +1,5 @@
 import { EditorView, keymap } from '@codemirror/view';
-import { EditorSelection, EditorState, Prec } from '@codemirror/state';
+import { EditorSelection, EditorState, Prec, Text } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
 import { startCompletion as startTooltipCompletion, closeCompletion as closeTooltipCompletion, completionStatus as tooltipCompletionStatus, CompletionContext, CompletionResult, insertCompletionText, pickedCompletion, Completion, autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { editingState } from '../../common/store';
@@ -169,7 +169,7 @@ export function startCompletion({ afterDelay }: { afterDelay: number }) {
 
     // Defensive fix for string slicing issue,
     // the pos at the end of a string is valid and it's the most common case for word completion.
-    if (anchor.pos < 0 && anchor.pos > anchor.text.length) {
+    if (anchor.pos < 0 || anchor.pos > anchor.text.length) {
       return console.error(`Invalid anchor at pos: ${pos}`);
     }
 
@@ -184,9 +184,15 @@ export function startCompletion({ afterDelay }: { afterDelay: number }) {
       // This is not sound, and we don't want a sound but super complicated algorithm.
       if (usesCache) {
         return undefined;
-      } else {
-        return state.doc.toString();
       }
+
+      // Native tokenizes the full text for word completions. Moving between
+      // lines without editing used to re-send the whole document each time.
+      if (storage.cachedDocument === state.doc) {
+        return undefined;
+      }
+      storage.cachedDocument = state.doc;
+      return state.doc.toString();
     })();
 
     window.nativeModules.completion.requestCompletions({ anchor, fullText });
@@ -279,9 +285,11 @@ function bracketBoundary(context: CompletionContext) {
 const storage: {
   cancellable: ReturnType<typeof setTimeout> | undefined;
   cachedPosition: number;
+  cachedDocument: Text | undefined;
   panelVisible: boolean;
 } = {
   cancellable: undefined,
   cachedPosition: -1,
+  cachedDocument: undefined,
   panelVisible: false,
 };

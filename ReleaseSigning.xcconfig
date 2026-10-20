@@ -1,0 +1,9 @@
+// Opt-in Developer ID archive configuration. CI supplies the existing certificate
+// SHA-1 and Team ID; profiles are downloaded before archiving. No automatic
+// provisioning or signing credential creation is allowed.
+CODE_SIGN_STYLE = Manual
+KSAMINT_PROFILE_MarkEditMac = ksamint MarkEdit Developer ID 2.5.6
+KSAMINT_PROFILE_ConversationCaptureHelper = ksamint Capture Helper Developer ID 2.5.6
+KSAMINT_PROFILE_FinderExtension = ksamint Finder Extension Developer ID 2.5.6
+KSAMINT_PROFILE_PreviewExtension = ksamint Preview Extension Developer ID
+KSAMINT_PROFILE_QuickActionExtension = ksamint Quick Actions Developer ID 2.5.6

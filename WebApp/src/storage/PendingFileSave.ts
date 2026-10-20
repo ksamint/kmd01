@@ -4,7 +4,7 @@ export type PendingFileEdit = {
 };
 
 export class PendingFileSave<T> {
-  private pending?: PendingFileEdit;
+  private pending = new Map<string, PendingFileEdit>();
   private timer?: ReturnType<typeof setTimeout>;
   private writeChain: Promise<void> = Promise.resolve();
   private activeWrites = 0;
@@ -18,7 +18,7 @@ export class PendingFileSave<T> {
   ) {}
 
   queue(fileId: string, content: string) {
-    this.pending = { fileId, content };
+    this.pending.set(fileId, { fileId, content });
     this.onSavingChange(true);
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
@@ -29,42 +29,32 @@ export class PendingFileSave<T> {
   async flush(): Promise<T | undefined> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    const edit = this.pending;
-    if (!edit) {
-      await this.writeChain;
-      this.updateSavingState();
-      return undefined;
-    }
-    this.pending = undefined;
+    const edits = [...this.pending.values()];
     this.activeWrites += 1;
     this.updateSavingState();
     let saved: T | undefined;
-    const task = this.writeChain
-      .catch(() => undefined)
-      .then(async () => {
+    const task = this.writeChain.catch(() => undefined).then(async () => {
+      for (const edit of edits) {
+        if (this.pending.get(edit.fileId) !== edit) continue;
+        // Keep each file's text queued until its own write succeeds.
         saved = await this.write(edit.fileId, edit.content);
-      });
+        if (this.pending.get(edit.fileId) === edit) {
+          this.pending.delete(edit.fileId);
+          this.onSaved(saved, edit);
+        }
+      }
+    });
     this.writeChain = task;
     try {
       await task;
-      if (saved !== undefined && !this.hasPendingEditFor(edit.fileId)) {
-        this.onSaved(saved, edit);
-      }
       return saved;
-    } catch (error) {
-      if (!this.pending) this.pending = edit;
-      throw error;
     } finally {
       this.activeWrites -= 1;
       this.updateSavingState();
     }
   }
 
-  private hasPendingEditFor(fileId: string) {
-    return this.pending?.fileId === fileId;
-  }
-
   private updateSavingState() {
-    this.onSavingChange(Boolean(this.pending) || this.activeWrites > 0);
+    this.onSavingChange(this.pending.size > 0 || this.activeWrites > 0);
   }
 }

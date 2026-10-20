@@ -1,0 +1,100 @@
+name: Signed candidate runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stapled draft tag to test without changing its bytes
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: candidate-runtime-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.candidate.outputs.commit }}
+      sha256: ${{ steps.candidate.outputs.sha256 }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Bind the existing draft to protected main and successful exact-commit CI
+        id: candidate
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .protected)" = true
+          directory="$RUNNER_TEMP/candidate-input"
+          mkdir -p "$directory"
+          gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft > "$directory/Release.json"
+          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$directory" \
+            --pattern "ksamint-MarkEdit-${CANDIDATE_TAG#v}.dmg" \
+            --pattern NotarySubmission.json --pattern SHA256SUMS
+          python3 Scripts/ci-candidate-provenance.py "$CANDIDATE_TAG" "$directory" > "$directory/verified.json"
+          commit="$(jq -r .commit "$directory/verified.json")"
+          git fetch --no-tags origin "refs/tags/$CANDIDATE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$commit"
+          python3 Scripts/ci-release-gates.py trusted-build "$commit"
+          printf 'commit=%s\nsha256=%s\n' "$commit" \
+            "$(jq -r .sha256 "$directory/verified.json")" >> "$GITHUB_OUTPUT"
+
+  runtime:
+    needs: preflight
+    name: Signed candidate macOS ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: '26'
+            runner: macos-26
+            arch: arm64
+            xcode: '26.6'
+          - os: '15'
+            runner: macos-15
+            arch: arm64
+            xcode: '26.3'
+          - os: '15'
+            runner: macos-15-intel
+            arch: x86_64
+            xcode: '26.3'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_TAG: ${{ inputs.tag }}
+      EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+      EXPECTED_DMG_SHA256: ${{ needs.preflight.outputs.sha256 }}
+      CI_RUNTIME_ARCH: ${{ matrix.arch }}
+      CI_RUNTIME_OS: ${{ matrix.os }}
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify and run the exact signed candidate in the fresh hosted account
+        env:
+          CI_ISOLATED_RUNNER: ${{ runner.environment }}
+        run: Scripts/ci-candidate-runtime.sh
+      - name: Preserve sanitized exact-artifact runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-candidate-${{ matrix.os }}-${{ matrix.arch }}-evidence
+          path: ${{ runner.temp }}/candidate-evidence
+          if-no-files-found: error
+          retention-days: 30

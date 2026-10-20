@@ -189,7 +189,6 @@ extension EditorViewController: EditorModuleCoreDelegate {
 
     if document?.shouldSaveWhenIdle == true {
       document?.saveContent()
-      bridge.history.markContentClean()
     } else {
       document?.updateContent()
     }
@@ -401,8 +400,7 @@ extension EditorViewController: EditorModuleAPIDelegate {
       return false
     }
 
-    await document.waitUntilSaveCompleted(userInitiated: true)
-    return true
+    return await document.waitUntilSaveCompleted(userInitiated: true)
   }
 
   func editorAPICloseDocument(_ sender: EditorModuleAPI) -> Bool {

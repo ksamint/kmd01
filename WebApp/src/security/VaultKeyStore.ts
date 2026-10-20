@@ -145,12 +145,11 @@ export async function saveVaultSyncState(
 ): Promise<void> {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction(STORE_NAME, 'readwrite')
-      .objectStore(STORE_NAME)
-      .put(state, `sync:${workspaceId}`);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error('Sync state transaction aborted'));
+    transaction.objectStore(STORE_NAME).put(state, `sync:${workspaceId}`);
   });
 }
 
@@ -270,17 +269,36 @@ async function writeIdentity(workspaceId: string, identity: StoredIdentity): Pro
   });
 }
 
+let databaseConnection: Promise<IDBDatabase> | undefined;
+
 async function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  if (databaseConnection === undefined) {
+    databaseConnection = new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(STORE_NAME)) {
+          request.result.createObjectStore(STORE_NAME);
+        }
+      };
+      request.onsuccess = () => {
+        const database = request.result;
+        const forget = () => {
+          databaseConnection = undefined;
+        };
+        database.onversionchange = () => {
+          database.close();
+          forget();
+        };
+        database.onclose = forget;
+        resolve(database);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    databaseConnection.catch(() => {
+      databaseConnection = undefined;
+    });
+  }
+  return databaseConnection;
 }
 
 function concatenate(...values: Uint8Array[]): Uint8Array {

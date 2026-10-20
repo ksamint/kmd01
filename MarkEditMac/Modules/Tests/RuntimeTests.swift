@@ -155,7 +155,7 @@ final class RuntimeTests: XCTestCase {
     testExistenceOfClass(named: "_NSTitlebarDecorationView")
     testExistenceOfClass(named: "NSToolbarFullScreenWindow")
     testExistenceOfClass(named: "NSTitlebarContainerView")
-    testExistenceOfClass(named: "NSTitlebarBackgroundView")
+    // Background views vary by OS; testRetrievingTitlebarPrivateViews validates the supported accessor.
     testExistenceOfClass(named: "NSTitlebarView")
     testExistenceOfClass(named: "NSToolbarButton")
     testExistenceOfClass(named: "NSThemeDocumentButton")

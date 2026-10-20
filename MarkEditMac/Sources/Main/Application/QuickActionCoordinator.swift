@@ -1,5 +1,6 @@
 import AppKit
 import Security
+import SharedUI
 import UniformTypeIdentifiers
 
 enum QuickActionKind: String, Codable {
@@ -36,17 +37,31 @@ final class QuickActionCoordinator {
         from: Data(contentsOf: requestURL)
       )
       guard request.version == 1, request.id == id,
-        Date().timeIntervalSince(request.createdAt) < 10 * 60
+        (0 ..< 10 * 60).contains(Date().timeIntervalSince(request.createdAt))
       else {
         throw QuickActionError.invalidRequest
       }
-      let urls = try request.resourceBookmarks.map(resolve)
+      var urls: [URL] = []
+      var releaseScopesOnReturn = true
       defer {
-        for url in urls {
-          url.stopAccessingSecurityScopedResource()
+        if releaseScopesOnReturn {
+          for url in urls { url.stopAccessingSecurityScopedResource() }
         }
         try? FileManager.default.removeItem(at: requestURL)
       }
+      for bookmark in request.resourceBookmarks {
+        urls.append(try WorkspaceBookmarkOperations.system.acquire(bookmark, scope: .transfer).url)
+      }
+      switch request.action {
+      case .preview, .openEditor, .analyzeAgent:
+        WorkspaceBookmarkOperations.system.retainForSession(urls, in: &appDelegate.activeResourceSecurityScopes)
+        releaseScopesOnReturn = false
+      default:
+        break
+      }
+      DistributedNotificationCenter.default().post(
+        name: WorkspaceBookmarkNotifications.quickActionReceived, object: id.uuidString
+      )
       try await execute(request.action, urls: urls, appDelegate: appDelegate)
     } catch {
       let alert = NSAlert(error: error)
@@ -202,25 +217,11 @@ final class QuickActionCoordinator {
     return path.count >= rootPath.count && Array(path.prefix(rootPath.count)) == rootPath
   }
 
-  private func resolve(_ bookmark: Data) throws -> URL {
-    var stale = false
-    let url = try URL(
-      resolvingBookmarkData: bookmark,
-      options: [.withSecurityScope],
-      relativeTo: nil,
-      bookmarkDataIsStale: &stale
-    )
-    guard !stale, url.startAccessingSecurityScopedResource() else {
-      throw CocoaError(.fileReadNoPermission)
-    }
-    return url.standardizedFileURL
-  }
-
   private func workspaceRoot() throws -> URL {
     guard let bookmark = AppPreferences.General.workspaceFolderBookmark else {
       throw QuickActionError.noWorkspace
     }
-    return try resolve(bookmark)
+    return try WorkspaceBookmarkOperations.system.acquire(bookmark, scope: .persistent).url
   }
 
   private func pendingDirectory() throws -> URL {
@@ -465,7 +466,8 @@ actor FormatConversionService: ConversionProvider {
       let output = plan.outputDirectory.appending(
         path: "\((url.lastPathComponent as NSString).deletingPathExtension).md"
       )
-      let content = try localMarkdown(url)
+      let content = try await localMarkdown(url)
+      if cancelled.contains(plan.request.id) { throw CancellationError() }
       try Data(content.utf8).write(to: output, options: .atomic)
       outputs.append(output)
       progress(Double(index + 1) / Double(plan.supported.count))
@@ -475,7 +477,7 @@ actor FormatConversionService: ConversionProvider {
 
   func cancel(jobID: UUID) async { cancelled.insert(jobID) }
 
-  private func localMarkdown(_ url: URL) throws -> String {
+  private func localMarkdown(_ url: URL) async throws -> String {
     if url.hasDirectoryPath {
       let children = try FileManager.default.contentsOfDirectory(
         at: url,
@@ -488,42 +490,31 @@ actor FormatConversionService: ConversionProvider {
     }
     let ext = url.pathExtension.lowercased()
     if ext == "zip" {
-      return try archiveManifest(url, executable: "/usr/bin/zipinfo", arguments: ["-1"])
+      return try await archiveManifest(url, executable: "/usr/bin/zipinfo", arguments: ["-1"])
     }
     if ["tar", "tgz"].contains(ext) {
-      return try archiveManifest(url, executable: "/usr/bin/tar", arguments: ["-tf"])
+      return try await archiveManifest(url, executable: "/usr/bin/tar", arguments: ["-tf"])
     }
     let text = try String(contentsOf: url, encoding: .utf8)
     if ["md", "markdown", "txt"].contains(ext) { return text }
     if ["html", "htm"].contains(ext) {
-      guard
-        let attributed = try? NSAttributedString(
-          data: Data(text.utf8),
-          options: [.documentType: NSAttributedString.DocumentType.html],
-          documentAttributes: nil
-        )
-      else { return text }
-      return attributed.string
+      return ClipboardCaptureDecoder.decode(ClipboardCaptureSnapshot(
+        plainText: nil, html: Data(text.utf8), rtf: nil, fileURLs: []
+      ))?.content ?? text
     }
     return "# \(url.lastPathComponent)\n\n```\(ext)\n\(text)\n```\n"
   }
 
-  private func archiveManifest(_ url: URL, executable: String, arguments: [String]) throws -> String {
-    let process = Process()
-    let output = Pipe()
-    let errors = Pipe()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments + [url.path]
-    process.standardOutput = output
-    process.standardError = errors
-    try process.run()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-      let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-      throw QuickActionError.archiveListing(detail ?? "Archive listing failed")
+  private func archiveManifest(_ url: URL, executable: String, arguments: [String]) async throws -> String {
+    let output = try await ProcessOutput.run(
+      executableURL: URL(fileURLWithPath: executable), arguments: arguments + [url.path]
+    )
+    guard output.status == 0 else {
+      let detail = String(data: output.standardError, encoding: .utf8)
+      throw QuickActionError.archiveListing(detail.flatMap { $0.isEmpty ? nil : $0 } ?? "Archive listing failed")
     }
-    let listing =
-      String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let listingData = output.standardOutput
+    let listing = String(data: listingData, encoding: .utf8) ?? ""
     let entries = listing.split(whereSeparator: \.isNewline).prefix(200_000)
     return "# \(url.lastPathComponent)\n\n" + entries.map { "- `\($0)`" }.joined(separator: "\n")
       + "\n"

@@ -154,12 +154,11 @@ extension EditorViewController {
   @IBAction func terminate(_ sender: Any?) {
     // Window restoration is enabled, handle unsaved drafts to prevent data loss
     if AppPreferences.General.quitAlwaysKeepsWindows, let unsavedDraft {
-      return unsavedDraft.runModalSavePanel(
-        for: .saveOperation,
-        delegate: self,
-        didSave: #selector(handleDraftSave(_:didSave:)),
-        contextInfo: nil
-      )
+      unsavedDraft.saveContent(userInitiated: true) { [weak self] saved in
+        guard saved else { return }
+        self?.terminate(sender)
+      }
+      return
     }
 
     performTerminate(sender)
@@ -167,21 +166,9 @@ extension EditorViewController {
 
   // MARK: - Window Restoration
 
-  var unsavedDraft: NSDocument? {
+  var unsavedDraft: EditorDocument? {
     NSDocumentController.shared.editorDocuments.first {
       $0.fileURL == nil && ($0.isOutdated || $0.hasUnautosavedChanges)
-    }
-  }
-
-  @objc private func handleDraftSave(_ document: NSDocument, didSave: Bool) {
-    guard didSave else {
-      return
-    }
-
-    if unsavedDraft == nil {
-      performTerminate(nil)
-    } else {
-      document.close()
     }
   }
 

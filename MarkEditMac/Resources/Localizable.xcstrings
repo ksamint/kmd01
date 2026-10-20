@@ -1,6 +1,146 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Workspace access needs attention. Choose the folder to grant access.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L’accès à l’espace de travail nécessite votre intervention. Sélectionnez le dossier pour autoriser l’accès."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークスペースへのアクセスを確認してください。フォルダを選択してアクセスを許可してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区访问需要处理。请选择文件夹以授予访问权限。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作區存取需要處理。請選擇檔案夾以授予存取權限。"
+          }
+        }
+      }
+    },
+    "Workspace folder not found. It may have moved or its volume may be disconnected.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dossier de l’espace de travail introuvable. Il a peut-être été déplacé ou son volume est déconnecté."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークスペースのフォルダが見つかりません。移動されたか、ボリュームが接続されていない可能性があります。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到工作区文件夹。它可能已移动，或所在卷已断开连接。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到工作區檔案夾。它可能已移動，或所在卷宗已中斷連線。"
+          }
+        }
+      }
+    },
+    "Workspace storage is unavailable. Reconnect it, then retry.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le stockage de l’espace de travail est indisponible. Reconnectez-le, puis réessayez."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークスペースの保存先を利用できません。再接続してから再試行してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区存储不可用。请重新连接后重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作區儲存空間無法使用。請重新連線後再試。"
+          }
+        }
+      }
+    },
+    "Workspace could not be restored. Retry or open the folder again.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de restaurer l’espace de travail. Réessayez ou ouvrez à nouveau le dossier."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークスペースを復元できませんでした。再試行するか、フォルダを開き直してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法恢复工作区。请重试或重新打开文件夹。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法回復工作區。請再試一次或重新開啟檔案夾。"
+          }
+        }
+      }
+    },
+    "Capture sharing is unavailable. Check the app installation or access.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le partage des captures est indisponible. Vérifiez l’installation de l’app ou ses autorisations d’accès."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャプチャの共有を利用できません。アプリのインストール状態またはアクセス権を確認してください。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "捕获内容共享不可用。请检查应用安装或访问权限。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "擷取內容共享無法使用。請檢查 App 安裝或存取權限。"
+          }
+        }
+      }
+    },
     "Open Accessibility Settings…" : {
       "localizations" : {
         "fr" : { "stringUnit" : { "state" : "translated", "value" : "Ouvrir les réglages d’accessibilité…" } },
@@ -243,6 +383,14 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "クリップボード取り込みはバックグラウンドで実行中です" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "剪贴板捕捉正在后台运行" } },
         "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "剪貼簿擷取正在背景執行" } }
+      }
+    },
+    "Clipboard capture is registered and will start at the next login" : {
+      "localizations" : {
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "La capture du presse-papiers est enregistrée et démarrera à la prochaine connexion" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "クリップボード取り込みは登録済みで、次回ログイン時に開始します" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "剪贴板捕捉已注册，将在下次登录时启动" } },
+        "zh-Hant" : { "stringUnit" : { "state" : "translated", "value" : "剪貼簿擷取已註冊，將在下次登入時啟動" } }
       }
     },
     "Encrypted cloud sync" : {

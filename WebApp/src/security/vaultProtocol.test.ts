@@ -249,3 +249,37 @@ describe('SignedDeviceGrantV1', () => {
     })).rejects.toThrow('Invalid device grant signature');
   });
 });
+
+describe('VaultObjectV1 large payloads', () => {
+  it('seals and encodes a note larger than the call-argument limit', async () => {
+    // Spreading the ciphertext into Array.prototype.push used to overflow the
+    // stack around 128 KB, which made syncing any larger note impossible.
+    const plaintext = new TextEncoder().encode('# Big note\n\n'.concat('lorem ipsum '.repeat(120_000)));
+    expect(plaintext.length).toBeGreaterThan(1_000_000);
+    const sealed = await sealVaultObject({
+      plaintext,
+      masterKey: unhex(vector.masterKeyHex),
+      fileId: vector.fileId,
+      versionId: vector.versionId,
+    });
+    const object = encodeVaultObject({
+      fileId: vector.fileId,
+      versionId: vector.versionId,
+      nonce: sealed.nonce,
+      ciphertext: sealed.ciphertext,
+      authenticationTag: sealed.authenticationTag,
+      paddedSize: sealed.paddedSize,
+    });
+    const decoded = decodeVaultObject(object);
+    expect(decoded.ciphertext.length).toBe(sealed.ciphertext.length);
+    expect(Buffer.from(decoded.ciphertext).equals(Buffer.from(sealed.ciphertext))).toBe(true);
+    const opened = await openVaultObject({
+      value: sealed,
+      plaintextSize: plaintext.length,
+      masterKey: unhex(vector.masterKeyHex),
+      fileId: vector.fileId,
+      versionId: vector.versionId,
+    });
+    expect(opened.length).toBe(plaintext.length);
+  });
+});
