@@ -70,7 +70,8 @@ function exactAXEditor(window, trace) {
     const value = axValue(element, 'AXValue');
     let settable = false;
     try { settable = element.attributes.byName('AXValue').settable(); } catch (_) {}
-    trace(`ax:text-area length=${typeof value === 'string' ? value.length : 'unavailable'} settable=${settable}`);
+    const children = axValue(element, 'AXChildren');
+    trace(`ax:text-area length=${typeof value === 'string' ? value.length : 'unavailable'} settable=${settable} children=${Array.isArray(children) ? children.length : 'unavailable'}`);
     if (typeof value === 'string' && settable === true) matches.push(element);
   }
   trace(`ax:roles=${JSON.stringify(roles)}`);
@@ -110,6 +111,9 @@ function operateAXDocument(events, process, pid, fixture, normalize, expectedSou
   // WebKit may omit the web subtree of a restored background window until raised.
   process.frontmost = true;
   window.actions.byName('AXRaise').perform();
+  const focusedWindow = axValue(process, 'AXFocusedWindow');
+  trace(`ax:window frontmost=${process.frontmost()} focusedFixture=${Boolean(focusedWindow
+    && normalize(String(axValue(focusedWindow, 'AXDocument'))) === fixture)} minimized=${axValue(window, 'AXMinimized')} main=${axValue(window, 'AXMain')} focused=${axValue(window, 'AXFocused')}`);
   const editor = exactAXEditor(window, trace);
   editor.focused = true;
   const assertFocus = () => {
@@ -178,6 +182,18 @@ function isProductionBundle(identifier) {
   ].includes(identifier);
 }
 
+function diagnosticWindowIDs(windows, pid) {
+  const matches = windows.filter(window => window.kCGWindowOwnerPID === pid
+    && window.kCGWindowLayer === 0 && window.kCGWindowIsOnscreen === true);
+  if (matches.length > 8) throw new Error('Too many test windows for diagnostics');
+  return matches.map(window => {
+    if (!Number.isSafeInteger(window.kCGWindowNumber) || window.kCGWindowNumber <= 0) {
+      throw new Error('Invalid diagnostic window ID');
+    }
+    return window.kCGWindowNumber;
+  }).join('\n');
+}
+
 function run(argv) {
   ObjC.import('AppKit');
   const normalize = value => {
@@ -217,6 +233,18 @@ function run(argv) {
   if (matches.length !== 1 || String(matches[0]) !== expectedPID) {
     throw new Error('Test process identity changed');
   }
+  if (mode === 'diagnostic-window-ids') {
+    const environment = $.NSProcessInfo.processInfo.environment;
+    if (ObjC.unwrap(environment.objectForKey('GITHUB_ACTIONS')) !== 'true'
+        || ObjC.unwrap(environment.objectForKey('CI_ISOLATED_RUNNER')) !== 'github-hosted') {
+      throw new Error('Window diagnostics require an isolated hosted runner');
+    }
+    ObjC.import('CoreGraphics');
+    if (!$.CGPreflightScreenCaptureAccess()) return '';
+    return diagnosticWindowIDs(ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(
+      $.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID,
+    )), Number(expectedPID));
+  }
   const trace = typeof module === 'undefined' ? value => console.log(`[smoke] ${value}`) : () => {};
   if (mode === 'save' || mode === 'restored') {
     try {
@@ -255,4 +283,5 @@ function run(argv) {
 if (typeof module !== 'undefined') module.exports = {
   exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission, isProductionBundle, run,
   exactAXWindow, exactAXEditor, operateAXDocument, copyFocusedSource,
+  diagnosticWindowIDs,
 };
