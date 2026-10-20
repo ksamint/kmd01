@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+test "${GITHUB_ACTIONS:-}" = true
+test "${CI_ISOLATED_RUNNER:-}" = github-hosted
+smoke_script="$(cd "$(dirname "$0")" && pwd)/ci-document-smoke.js"
+
 app=${1:?"usage: test-document-open-smoke.sh /path/to/kmd.app"}
 executable="$app/Contents/MacOS/kmd"
 
@@ -22,7 +26,8 @@ fixture="$temporary/document-open-smoke.md"
 touch "$fixture"
 
 cleanup() {
-  if [ -n "${app_pid:-}" ] && kill -0 "$app_pid" >/dev/null 2>&1; then
+  if [ -n "${app_pid:-}" ] && kill -0 "$app_pid" >/dev/null 2>&1 &&
+    [ "$(osascript -l JavaScript "$smoke_script" pid "$app" 2>/dev/null || true)" = "$app_pid" ]; then
     kill -TERM "$app_pid" >/dev/null 2>&1 || true
   fi
   rm -f "$fixture"
@@ -41,7 +46,7 @@ open -n -a "$app"
 app_pid=""
 attempt=0
 while [ "$attempt" -lt 20 ]; do
-  app_pid=$(pgrep -x "$process_name" | head -1 || true)
+  app_pid=$(osascript -l JavaScript "$smoke_script" pid "$app")
   [ -n "$app_pid" ] && break
   attempt=$((attempt + 1))
   sleep 0.25
@@ -56,18 +61,13 @@ fi
 # a second document exercises NSDocumentController's concurrent-read queue,
 # which is the path that previously violated EditorDocument's actor isolation.
 sleep 1
-open -a "$app" "$fixture"
+osascript -l JavaScript "$smoke_script" open "$app" "$app_pid" "$fixture"
 sleep 4
 
 # Exercise NSDocument's write path as well as its concurrent-read path. Swift 6
 # traps if EditorDocument advertises asynchronous writes while touching its
 # main-actor AppKit/WebKit state.
-osascript <<APPLESCRIPT &
-tell application "$app"
-  set source of front document to "# Save smoke test"
-  save front document
-end tell
-APPLESCRIPT
+osascript -l JavaScript "$smoke_script" save "$app" "$app_pid" "$fixture" &
 script_pid=$!
 attempt=0
 while kill -0 "$script_pid" >/dev/null 2>&1 && [ "$attempt" -lt 40 ]; do
