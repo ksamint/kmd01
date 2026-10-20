@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
-const { exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission, isProductionBundle, run } = require('./ci-document-smoke.js');
+const {
+  exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission,
+  exactAXWindow, exactAXEditor, operateAXDocument, isProductionBundle, run,
+} = require('./ci-document-smoke.js');
 const fixture = { file: () => '/isolated/fixture.md' };
 const unrelated = { file: () => '/real-user/notes.md' };
 const untitled = { file: () => null };
@@ -138,3 +141,108 @@ saveExactDocument({
 }, '/tmp/fixture.md', normalize, 'diagnostic fixture', stage => stages.push(stage));
 assert.deepEqual(stages, ['documents:query', 'fixture:select', 'source:set', 'document:save', 'document:saved']);
 console.log('Nonprompting automation preflight fails closed and save diagnostics identify each event stage.');
+
+function attribute(value, writable = false) {
+  let stored = value;
+  const result = { settable: () => writable };
+  Object.defineProperty(result, 'value', {
+    get: () => () => stored,
+    set: next => { assert.equal(writable, true); stored = next; },
+  });
+  return result;
+}
+function axNode(role, values) {
+  return {
+    role: () => role,
+    attributes: { byName: name => {
+      if (!values[name]) throw new Error('unsupported attribute');
+      return values[name];
+    } },
+  };
+}
+const axText = attribute(savedSource, true);
+const axEditor = axNode('AXTextArea', { AXValue: axText });
+let focused = false;
+Object.defineProperty(axEditor, 'focused', { get: () => () => focused, set: value => { focused = value; } });
+const wrapper = axNode('AXTextArea', {}); // Native WKWebView can have the same AX role.
+let raised = 0;
+const axDocument = attribute('/private/tmp/fixture.md');
+const axWindow = Object.assign(axNode('AXWindow', { AXDocument: axDocument }), {
+  entireContents: () => [wrapper, axEditor],
+  sheets: () => [],
+  actions: { byName(name) { assert.equal(name, 'AXRaise'); return { perform() { raised++; } }; } },
+});
+const unrelatedWindow = axNode('AXWindow', { AXDocument: attribute('/private/tmp/unrelated.md') });
+assert.equal(exactAXWindow([unrelatedWindow, axWindow], '/tmp/fixture.md', normalize), axWindow);
+assert.throws(() => exactAXWindow([unrelatedWindow], '/tmp/fixture.md', normalize));
+assert.throws(() => exactAXWindow([axWindow, axWindow], '/tmp/fixture.md', normalize));
+assert.equal(exactAXEditor(axWindow, savedSource, () => {}), axEditor);
+assert.throws(() => exactAXEditor(axWindow, savedSource.trimEnd(), () => {}));
+assert.throws(() => exactAXEditor({ entireContents: () => [axEditor, axEditor] }, savedSource, () => {}));
+assert.throws(() => exactAXEditor({ entireContents: () => Array(257).fill(wrapper) }, savedSource, () => {}));
+
+let frontmost = false;
+let activeWindow = axWindow;
+const axProcess = Object.assign(axNode('AXApplication', { AXFocusedWindow: {
+  value: () => activeWindow,
+} }), { unixId: () => 103, windows: () => [unrelatedWindow, axWindow] });
+Object.defineProperty(axProcess, 'frontmost', { get: () => () => frontmost, set: value => { frontmost = value; } });
+const keystrokes = [];
+const systemEvents = { keystroke: (...args) => keystrokes.push(args) };
+operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, undefined, () => {});
+assert.equal(raised, 0);
+assert.equal(frontmost, false);
+assert.equal(focused, false);
+assert.equal(keystrokes.length, 0);
+assert.throws(() => operateAXDocument(systemEvents, axProcess, 999, '/tmp/fixture.md', normalize, savedSource, 'wrong', () => {}));
+activeWindow = unrelatedWindow;
+assert.throws(() => operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, 'wrong', () => {}));
+assert.equal(axText.value(), savedSource);
+assert.equal(keystrokes.length, 0);
+activeWindow = axWindow;
+operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, '# new UI fixture', () => {});
+assert.equal(axText.value(), '# new UI fixture');
+assert.deepEqual(keystrokes, [['s', { using: 'command down' }]]);
+assert.throws(() => operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, undefined, () => {}));
+console.log('AX fallback requires exact PID/document/full text and focus; restoration is read-only.');
+
+// Exercise fallback dispatch and its separate permission boundary, never a
+// blanket retry through System Events after an arbitrary scripting error.
+$.NSProcessInfo = { processInfo: { environment: {
+  objectForKey: key => ({ GITHUB_ACTIONS: 'true', CI_ISOLATED_RUNNER: 'github-hosted' }[key]),
+} } };
+$.NSDictionary = { dictionary: {} };
+$.NSWorkspaceLaunchWithoutActivation = 512;
+$.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier = bundle => {
+  assert.equal(bundle, 'com.apple.systemevents');
+  return 'system-events-url';
+};
+$.NSWorkspace.sharedWorkspace.launchApplicationAtURLOptionsConfigurationError = (url, options) => {
+  assert.equal(url, 'system-events-url');
+  assert.equal(options, 512);
+  return { bundleIdentifier: 'com.apple.systemevents', processIdentifier: 500 };
+};
+let eventsPermission = -1744;
+$.AEDeterminePermissionToAutomateTarget = (target, _eventClass, _eventID, askUser) => {
+  assert.equal(askUser, false);
+  return target.pid === 103 ? -1744 : eventsPermission;
+};
+global.Application = () => { throw new Error('must not query System Events before its grant is checked'); };
+assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'blocked']), /-1744/);
+eventsPermission = 0;
+global.Application = pid => {
+  assert.equal(pid, 500);
+  return { UIElementsEnabled: () => false };
+};
+assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'blocked']), /Accessibility permission/);
+axText.value = savedSource;
+global.Application = pid => {
+  assert.equal(pid, 500);
+  return {
+    ...systemEvents, UIElementsEnabled: () => true,
+    processes: { whose(query) { assert.deepEqual(query, { unixId: 103 }); return () => [axProcess]; } },
+  };
+};
+run(['save', appPath, '103', '/tmp/fixture.md', '# granted UI fixture']);
+assert.equal(axText.value(), '# granted UI fixture');
+console.log('System Events fallback checks its own nonprompting grant and existing AX permission.');

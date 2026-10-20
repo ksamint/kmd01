@@ -39,8 +39,104 @@ function requireAutomationPermission(pid, trace) {
   );
   trace(`automation:status=${status}`);
   if (status !== 0) {
-    throw new Error(`Automation unavailable (OSStatus ${status}); no consent was requested`);
+    const error = new Error(`Automation unavailable (OSStatus ${status}); no consent was requested`);
+    error.automationStatus = status;
+    throw error;
   }
+}
+
+function axValue(element, name) {
+  try { return element.attributes.byName(name).value(); } catch (_) { return undefined; }
+}
+
+function exactAXWindow(windows, fixture, normalize) {
+  const matches = windows.filter(window => {
+    const document = axValue(window, 'AXDocument');
+    return typeof document === 'string' && normalize(document) === fixture;
+  });
+  if (matches.length !== 1) throw new Error(`Expected one exact AXDocument window; found ${matches.length}`);
+  return matches[0];
+}
+
+function exactAXEditor(window, expectedSource, trace) {
+  const elements = window.entireContents();
+  if (!Array.isArray(elements) || elements.length > 256) throw new Error('AX document subtree exceeds diagnostic bound');
+  const roles = {};
+  const matches = [];
+  for (const element of elements) {
+    const role = element.role();
+    roles[role] = (roles[role] || 0) + 1;
+    if (role !== 'AXTextArea') continue;
+    const value = axValue(element, 'AXValue');
+    let settable = false;
+    try { settable = element.attributes.byName('AXValue').settable(); } catch (_) {}
+    trace(`ax:text-area length=${typeof value === 'string' ? value.length : 'unavailable'} settable=${settable}`);
+    if (typeof value === 'string' && value === expectedSource && settable === true) matches.push(element);
+  }
+  trace(`ax:roles=${JSON.stringify(roles)}`);
+  // The native WebView wrapper and inner CodeMirror editor may both expose a
+  // text-area role. Never select by role/order alone or accept partial text.
+  if (matches.length !== 1) throw new Error(`Expected one writable full-text AX editor; found ${matches.length}`);
+  return matches[0];
+}
+
+function operateAXDocument(events, process, pid, fixture, normalize, expectedSource, newSource, trace) {
+  if (process.unixId() !== pid) throw new Error('AX process identity changed');
+  const window = exactAXWindow(process.windows(), fixture, normalize);
+  const editor = exactAXEditor(window, expectedSource, trace);
+  if (newSource === undefined) {
+    trace('ax:restoration-verified');
+    return; // No open, focus, selection, clipboard, or other mutation on restore.
+  }
+  if (window.sheets().length !== 0) throw new Error('Exact fixture window has a modal sheet');
+  process.frontmost = true;
+  window.actions.byName('AXRaise').perform();
+  editor.focused = true;
+  const assertFocus = () => {
+    const focusedWindow = axValue(process, 'AXFocusedWindow');
+    if (process.unixId() !== pid || !process.frontmost() || !editor.focused()
+        || !focusedWindow || normalize(String(axValue(focusedWindow, 'AXDocument'))) !== fixture
+        || normalize(String(axValue(window, 'AXDocument'))) !== fixture) {
+      throw new Error('Exact fixture editor lost focus; refusing UI input');
+    }
+  };
+  assertFocus();
+  trace('ax:source-set');
+  editor.attributes.byName('AXValue').value = newSource;
+  if (axValue(editor, 'AXValue') !== newSource) throw new Error('AX editor did not accept the complete fixture payload');
+  assertFocus();
+  trace('ax:save-command');
+  events.keystroke('s', { using: 'command down' });
+  // The shell verifies actual saved bytes before quit and exact restored text.
+}
+
+function hostedUIFallback(mode, pid, fixture, normalize, newSource, trace) {
+  const environment = $.NSProcessInfo.processInfo.environment;
+  if (ObjC.unwrap(environment.objectForKey('GITHUB_ACTIONS')) !== 'true'
+      || ObjC.unwrap(environment.objectForKey('CI_ISOLATED_RUNNER')) !== 'github-hosted') {
+    throw new Error('UI fallback requires an isolated hosted runner');
+  }
+  const workspace = $.NSWorkspace.sharedWorkspace;
+  const eventsURL = workspace.URLForApplicationWithBundleIdentifier('com.apple.systemevents');
+  if (!eventsURL) throw new Error('System Events is unavailable');
+  const running = workspace.launchApplicationAtURLOptionsConfigurationError(
+    eventsURL, $.NSWorkspaceLaunchWithoutActivation, $.NSDictionary.dictionary, null,
+  );
+  if (!running || ObjC.unwrap(running.bundleIdentifier) !== 'com.apple.systemevents') {
+    throw new Error('Could not identify System Events');
+  }
+  // Check the separate System Events grant without requesting or modifying it.
+  requireAutomationPermission(Number(running.processIdentifier), trace);
+  const events = Application(Number(running.processIdentifier));
+  if (events.UIElementsEnabled() !== true) throw new Error('Existing Accessibility permission is unavailable');
+  const processes = events.processes.whose({ unixId: pid })();
+  if (processes.length !== 1) throw new Error('Expected one System Events process with the exact app PID');
+  const source = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(
+    fixture, $.NSUTF8StringEncoding, null,
+  ));
+  if (typeof source !== 'string') throw new Error('Could not read dedicated fixture');
+  operateAXDocument(events, processes[0], pid, normalize(fixture), normalize, source,
+    mode === 'save' ? (newSource === undefined ? '# Save smoke test' : newSource) : undefined, trace);
 }
 
 function isProductionBundle(identifier) {
@@ -94,7 +190,15 @@ function run(argv) {
   }
   const trace = typeof module === 'undefined' ? value => console.log(`[smoke] ${value}`) : () => {};
   if (mode === 'save' || mode === 'restored') {
-    requireAutomationPermission(Number(expectedPID), trace);
+    try {
+      requireAutomationPermission(Number(expectedPID), trace);
+    } catch (error) {
+      if ((error.automationStatus !== -1743 && error.automationStatus !== -1744)
+          || !$.NSProcessInfo) throw error;
+      trace('automation:using-existing-UI-permissions');
+      hostedUIFallback(mode, Number(expectedPID), fixture, normalize, saveSource, trace);
+      return;
+    }
   }
   trace('application:connect');
   const app = Application(Number(expectedPID));
@@ -121,4 +225,5 @@ function run(argv) {
 
 if (typeof module !== 'undefined') module.exports = {
   exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission, isProductionBundle, run,
+  exactAXWindow, exactAXEditor, operateAXDocument,
 };
