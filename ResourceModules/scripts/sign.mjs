@@ -73,7 +73,7 @@ for (const definition of config.modules) {
     id: definition.id,
     displayName: definition.displayName,
     version: definition.version,
-    manifestURL: `https://raw.githubusercontent.com/fengurt/ksa-MarkEdit/resource-modules/ResourceModules/dist/${definition.id}/manifest.json`,
+    manifestURL: `https://raw.githubusercontent.com/ksamint/kmd01/resource-modules/ResourceModules/dist/${definition.id}/manifest.json`,
     manifestSHA256: sha256(manifestData),
     downloadBytes: files.reduce((sum, file) => sum + file.size, manifestData.byteLength),
     minAppVersion: definition.minAppVersion,

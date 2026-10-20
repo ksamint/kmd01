@@ -1,7 +1,7 @@
 # kmd
 
-[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-0F4B42)](https://github.com/fengurt/ksa-MarkEdit/releases/latest)
-[![Build and test](https://github.com/fengurt/ksa-MarkEdit/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/fengurt/ksa-MarkEdit/actions/workflows/build-and-test.yml)
+[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-0F4B42)](https://github.com/ksamint/kmd01/releases/latest)
+[![Build and test](https://github.com/ksamint/kmd01/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/ksamint/kmd01/actions/workflows/build-and-test.yml)
 
 kmd is a fast, native Markdown editor for macOS with first-class
 Simplified Chinese, Traditional Chinese, Japanese, and French interfaces.
@@ -45,7 +45,7 @@ open -a "kmd"
 ```
 
 Alternatively, download `ksamint-MarkEdit-<version>.dmg` from the
-[latest GitHub release](https://github.com/fengurt/ksa-MarkEdit/releases/latest).
+[latest GitHub release](https://github.com/ksamint/kmd01/releases/latest).
 
 Pull requests also produce an ARM64, ad-hoc-signed development artifact.
 Download `ksamint-MarkEdit-development` from the successful GitHub Actions run,
@@ -178,7 +178,7 @@ process; the server never receives plaintext searches or keys.
 Every translatable catalog entry is validated for completeness and placeholder
 safety in CI. Japanese and French translations are published only after an
 explicit native-language review. Translation corrections are welcome through
-the [issue tracker](https://github.com/fengurt/ksa-MarkEdit/issues).
+the [issue tracker](https://github.com/ksamint/kmd01/issues).
 
 ## Compatibility
 
@@ -211,7 +211,7 @@ The project contains:
 - `AgentSDK`: remote read-only, client-side-decrypting Agent SDK
 - `FinderExtension` and `PreviewExtension`: native system integrations
 
-Use Node.js 22 and Xcode 26.5:
+Use Node.js 24.19 and Xcode 26.6:
 
 ```sh
 cd CoreEditor

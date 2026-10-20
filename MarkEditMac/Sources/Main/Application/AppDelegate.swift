@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       moduleFailedPrefix: Localized.Resource.moduleFailed
     ),
     catalogURL: URL(
-      string: "https://raw.githubusercontent.com/fengurt/ksa-MarkEdit/resource-modules/ResourceModules/dist/registry.json"
+      string: "https://raw.githubusercontent.com/ksamint/kmd01/resource-modules/ResourceModules/dist/registry.json"
     ),
     bundledModuleURLs: ["okf", "html-safe", "archive-base"].compactMap {
       Bundle.main.url(forResource: $0, withExtension: nil)

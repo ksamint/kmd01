@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository=fengurt/ksa-MarkEdit
+repository=ksamint/kmd01
 requested_ref=HEAD
 run_id=
 

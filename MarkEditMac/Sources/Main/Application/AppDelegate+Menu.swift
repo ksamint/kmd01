@@ -326,10 +326,10 @@ private extension AppDelegate {
   }
 
   @IBAction func openIssueTracker(_ sender: Any?) {
-    NSWorkspace.shared.safelyOpenURL(string: "https://github.com/fengurt/ksa-MarkEdit/issues")
+    NSWorkspace.shared.safelyOpenURL(string: "https://github.com/ksamint/kmd01/issues")
   }
 
   @IBAction func openVersionHistory(_ sender: Any?) {
-    NSWorkspace.shared.safelyOpenURL(string: "https://github.com/fengurt/ksa-MarkEdit/releases")
+    NSWorkspace.shared.safelyOpenURL(string: "https://github.com/ksamint/kmd01/releases")
   }
 }

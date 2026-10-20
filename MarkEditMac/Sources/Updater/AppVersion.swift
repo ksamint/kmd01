@@ -8,7 +8,7 @@
 import Foundation
 
 /**
- [GitHub Releases API](https://api.github.com/repos/fengurt/ksa-MarkEdit/releases/latest)
+ [GitHub Releases API](https://api.github.com/repos/ksamint/kmd01/releases/latest)
  */
 struct AppVersion: Decodable {
   struct Asset: Decodable {
