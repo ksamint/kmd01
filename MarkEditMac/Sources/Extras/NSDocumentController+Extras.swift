@@ -17,14 +17,14 @@ extension NSDocumentController {
     !outdatedDocuments.isEmpty
   }
 
-  func saveOutdatedDocuments(userInitiated: Bool = false) async {
-    await withTaskGroup(of: Void.self) { group in
-      for document in outdatedDocuments {
-        group.addTask {
-          await document.waitUntilSaveCompleted(userInitiated: userInitiated)
-        }
+  func saveOutdatedDocuments(userInitiated: Bool = false) async -> Bool {
+    for document in outdatedDocuments {
+      guard await document.waitUntilSaveCompleted(userInitiated: userInitiated) else {
+        return false
       }
     }
+    // Another document can receive edits while a save panel is open.
+    return !hasOutdatedDocuments
   }
 }
 
@@ -32,6 +32,6 @@ extension NSDocumentController {
 
 private extension NSDocumentController {
   var outdatedDocuments: [EditorDocument] {
-    editorDocuments.filter { $0.isOutdated }
+    editorDocuments.filter { $0.isOutdated || $0.isDocumentEdited || $0.hasUnautosavedChanges }
   }
 }

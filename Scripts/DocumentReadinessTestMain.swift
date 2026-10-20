@@ -44,6 +44,7 @@ private final class EditorDouble {
 private final class EditorDocument: DocumentDouble {
   var fileData: Data?
   var stringValue = ""
+  var isOutdated = false
   var suggestedTextEncoding: TestEncoding?
   var hostViewController: EditorDouble?
   // DOCUMENT_READ

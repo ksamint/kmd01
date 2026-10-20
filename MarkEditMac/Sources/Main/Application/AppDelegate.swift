@@ -204,8 +204,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if AppRuntimeConfig.autoSaveWhenIdle && NSDocumentController.shared.hasOutdatedDocuments {
       // Terminate after all outdated documents are saved
       Task {
-        await NSDocumentController.shared.saveOutdatedDocuments()
-        application.reply(toApplicationShouldTerminate: true)
+        let saved = await NSDocumentController.shared.saveOutdatedDocuments()
+        if !saved {
+          NSDocumentController.shared.editorDocuments.forEach { $0.isTerminating = false }
+        }
+        application.reply(toApplicationShouldTerminate: saved)
       }
 
       return .terminateLater

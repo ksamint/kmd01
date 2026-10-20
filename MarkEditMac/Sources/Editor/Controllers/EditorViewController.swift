@@ -508,14 +508,6 @@ extension EditorViewController {
     bridge.core.setHasModalSheet(value: value)
   }
 
-  func handleFileURLChange() {
-    guard hasBeenEdited else {
-      return
-    }
-
-    bridge.history.markContentClean()
-  }
-
   func ensureWritingToolsSelectionRect() {
     bridge.writingTools.ensureSelectionRect()
   }
