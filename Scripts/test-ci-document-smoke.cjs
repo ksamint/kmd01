@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const {
   exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission,
-  exactAXWindow, exactAXEditor, operateAXDocument, isProductionBundle, run,
+  exactAXWindow, exactAXEditor, operateAXDocument, copyFocusedSource, isProductionBundle, run,
 } = require('./ci-document-smoke.js');
 const fixture = { file: () => '/isolated/fixture.md' };
 const unrelated = { file: () => '/real-user/notes.md' };
@@ -176,10 +176,9 @@ const unrelatedWindow = axNode('AXWindow', { AXDocument: attribute('/private/tmp
 assert.equal(exactAXWindow([unrelatedWindow, axWindow], '/tmp/fixture.md', normalize), axWindow);
 assert.throws(() => exactAXWindow([unrelatedWindow], '/tmp/fixture.md', normalize));
 assert.throws(() => exactAXWindow([axWindow, axWindow], '/tmp/fixture.md', normalize));
-assert.equal(exactAXEditor(axWindow, savedSource, () => {}), axEditor);
-assert.throws(() => exactAXEditor(axWindow, savedSource.trimEnd(), () => {}));
-assert.throws(() => exactAXEditor({ entireContents: () => [axEditor, axEditor] }, savedSource, () => {}));
-assert.throws(() => exactAXEditor({ entireContents: () => Array(257).fill(wrapper) }, savedSource, () => {}));
+assert.equal(exactAXEditor(axWindow, () => {}), axEditor);
+assert.throws(() => exactAXEditor({ entireContents: () => [axEditor, axEditor] }, () => {}));
+assert.throws(() => exactAXEditor({ entireContents: () => Array(257).fill(wrapper) }, () => {}));
 
 let frontmost = false;
 let activeWindow = axWindow;
@@ -188,23 +187,41 @@ const axProcess = Object.assign(axNode('AXApplication', { AXFocusedWindow: {
 } }), { unixId: () => 103, windows: () => [unrelatedWindow, axWindow] });
 Object.defineProperty(axProcess, 'frontmost', { get: () => () => frontmost, set: value => { frontmost = value; } });
 const keystrokes = [];
-const systemEvents = { keystroke: (...args) => keystrokes.push(args) };
+let editorSource = savedSource;
+let clipboardText = '';
+let clipboardGeneration = 0;
+$.NSPasteboardTypeString = 'public.utf8-plain-text';
+$.NSPasteboard = { generalPasteboard: {
+  get clearContents() { clipboardText = ''; return ++clipboardGeneration; },
+  get changeCount() { return clipboardGeneration; },
+  setStringForType(text) { clipboardText = text; clipboardGeneration++; return true; },
+  stringForType() { return clipboardText; },
+} };
+global.delay = () => {};
+const systemEvents = { keystroke: (...args) => {
+  keystrokes.push(args);
+  if (args[0] === 'c') { clipboardText = editorSource; clipboardGeneration++; }
+  if (args[0] === 'v') editorSource = clipboardText;
+} };
+// AX layout text may add a newline; only the normal copy path is the source oracle.
+axText.value = savedSource + '\n';
 operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, undefined, () => {});
-assert.equal(raised, 0);
-assert.equal(frontmost, false);
-assert.equal(focused, false);
-assert.equal(keystrokes.length, 0);
+assert.equal(editorSource, savedSource);
+assert.deepEqual(keystrokes.map(args => args[0]), ['a', 'c']);
+keystrokes.length = 0;
 assert.throws(() => operateAXDocument(systemEvents, axProcess, 999, '/tmp/fixture.md', normalize, savedSource, 'wrong', () => {}));
 activeWindow = unrelatedWindow;
 assert.throws(() => operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, 'wrong', () => {}));
-assert.equal(axText.value(), savedSource);
+assert.equal(editorSource, savedSource);
 assert.equal(keystrokes.length, 0);
 activeWindow = axWindow;
 operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, '# new UI fixture', () => {});
-assert.equal(axText.value(), '# new UI fixture');
-assert.deepEqual(keystrokes, [['s', { using: 'command down' }]]);
+assert.equal(editorSource, '# new UI fixture');
+assert.deepEqual(keystrokes.map(args => args[0]), ['a', 'c', 'v', 'a', 'c', 's']);
 assert.throws(() => operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, undefined, () => {}));
-console.log('AX fallback requires exact PID/document/full text and focus; restoration is read-only.');
+assert.throws(() => copyFocusedSource({ keystroke() {} }, () => {}), /did not copy/);
+assert.throws(() => copyFocusedSource(systemEvents, () => { throw new Error('lost focus'); }), /lost focus/);
+console.log('AX fallback verifies exact PID/document/focus and full copied text; restore never opens or edits.');
 
 // Exercise fallback dispatch and its separate permission boundary, never a
 // blanket retry through System Events after an arbitrary scripting error.
@@ -236,6 +253,7 @@ global.Application = pid => {
 };
 assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'blocked']), /Accessibility permission/);
 axText.value = savedSource;
+editorSource = savedSource;
 global.Application = pid => {
   assert.equal(pid, 500);
   return {
@@ -244,5 +262,5 @@ global.Application = pid => {
   };
 };
 run(['save', appPath, '103', '/tmp/fixture.md', '# granted UI fixture']);
-assert.equal(axText.value(), '# granted UI fixture');
+assert.equal(editorSource, '# granted UI fixture');
 console.log('System Events fallback checks its own nonprompting grant and existing AX permission.');

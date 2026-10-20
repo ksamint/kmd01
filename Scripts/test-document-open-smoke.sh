@@ -28,7 +28,7 @@ fi
 
 temporary=$(mktemp -d)
 fixture="$temporary/document-open-smoke.md"
-touch "$fixture"
+printf '# Dedicated open fixture\n' > "$fixture"
 app_pid=""
 
 # Diagnostics have their own short bounds and never inspect another app's
