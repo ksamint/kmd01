@@ -10,13 +10,7 @@ final class Harness: NSObject, NSApplicationDelegate, WKNavigationDelegate {
   private var completing = false
   private let cycle = CommandLine.arguments.dropFirst().first ?? "unknown"
 
-  private var variant: String {
-    #if STARTUP_PAINT_SPI
-    "startup-paint-spi"
-    #else
-    "default"
-    #endif
-  }
+  private let variant = "public-default"
 
   private func log(_ message: String) {
     FileHandle.standardOutput.write(Data((message + "\n").utf8))
@@ -41,26 +35,8 @@ final class Harness: NSObject, NSApplicationDelegate, WKNavigationDelegate {
   }
 
   private func createView(index: Int, visible: Bool) {
-    // Same unchanged production transparency/developer-extras baseline in both arms.
-    let configuration: WKWebViewConfiguration = .preferredConfig()
-    #if STARTUP_PAINT_SPI
-    // The sole experimental difference. No other private API or app preference.
-    for name in [
-      "_setDelaysWebProcessLaunchUntilFirstLoad:",
-      "_setWaitsForPaintAfterViewDidMoveToWindow:",
-    ] {
-      let selector = NSSelectorFromString(name)
-      guard configuration.responds(to: selector) else {
-        fail("unsupported-selector \(name)")
-        return
-      }
-      let setter = unsafeBitCast(
-        configuration.method(for: selector),
-        to: (@convention(c) (NSObject, Selector, Bool) -> Void).self
-      )
-      setter(configuration, selector, false)
-    }
-    #endif
+    // Public WebKit API control: no production configuration or private selectors.
+    let configuration = WKWebViewConfiguration()
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.navigationDelegate = self
     views.append(webView)

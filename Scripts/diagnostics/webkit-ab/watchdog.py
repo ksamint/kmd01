@@ -94,7 +94,7 @@ def main():
     app, evidence, variant, count = sys.argv[1:]
     evidence = Path(evidence).resolve()
     executable = str(Path(app).resolve() / "Contents/MacOS/WebKitAB")
-    if variant not in ("default", "startup-paint-spi") or not 1 <= int(count) <= 90:
+    if variant != "public-default" or not 1 <= int(count) <= 90:
         raise SystemExit("Invalid experiment arguments")
     outcomes = []
     for cycle in range(1, int(count) + 1):

@@ -1,4 +1,4 @@
-name: Temporary runtime diagnosis
+name: Temporary WebKit platform diagnosis
 
 on:
   push:
@@ -6,79 +6,45 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   diagnose:
-    name: Existing Xcode 26.6 macOS 26 build on macOS 15
+    name: Minimal WebKit startup (${{ matrix.variant }})
     runs-on: macos-15
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [public-default]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DIAGNOSTIC_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: diagnosis
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: d783bce28677d2d044925e382c17cd0cc5807799
-          path: tested-source
-          persist-credentials: false
-      - name: Download and verify the immutable existing artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Record platform and exact diagnostic source
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/runtime-diagnosis"
+          evidence="$RUNNER_TEMP/webkit-ab-evidence"
           mkdir -p "$evidence"
-          gh api repos/ksamint/kmd01/actions/artifacts/12268075116 > "$evidence/artifact-metadata.json"
-          jq -e '.id == 12268075116 and .name == "macos-26-release" and .expired == false and .workflow_run.id == 39427206517 and .workflow_run.head_sha == "5bdce9050cdef94b2aaf9a655a4930691149a31f" and .digest == "sha256:6166528f4b553b32ac6a61cd4125a50322b6b2bf4860d1945ace0f3c89dfaf19"' "$evidence/artifact-metadata.json"
-          gh run download 39427206517 --repo ksamint/kmd01 --name macos-26-release --dir "$evidence/input"
-          cd "$evidence/input"
-          test "$(cat commit.txt)" = d783bce28677d2d044925e382c17cd0cc5807799
-          test "$(shasum -a 256 kmd-release.zip | awk '{print $1}')" = 312fa664913454d1990aae941b65ecd7a85ff62cf87d486310644d051639440a
-          shasum -a 256 -c kmd-release.zip.sha256
-          # Keep prior-run runtime evidence separate from this diagnostic result.
-          rm -f runtime.log runtime-macos.txt runtime-architecture.txt
-          rm -rf diagnostics
-      - name: Record and apply only the two diagnostic harness files
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/runtime-diagnosis"
-          tested="$GITHUB_WORKSPACE/tested-source"
-          test "$(git -C "$tested" rev-parse HEAD)" = d783bce28677d2d044925e382c17cd0cc5807799
-          git -C "$GITHUB_WORKSPACE/diagnosis" rev-parse HEAD > "$evidence/harness-commit.txt"
-          for file in ci-document-smoke.js test-document-open-smoke.sh; do
-            cp "$GITHUB_WORKSPACE/diagnosis/Scripts/$file" "$tested/Scripts/$file"
-          done
-          git -C "$tested" diff -- Scripts/ci-document-smoke.js Scripts/test-document-open-smoke.sh > "$evidence/harness.diff"
-          (cd "$tested" && shasum -a 256 Scripts/ci-document-smoke.js Scripts/test-document-open-smoke.sh) > "$evidence/harness.sha256"
-          printf '%s\n' 'Diagnostic only: 90 cycles with unchanged prior-build app, recorded harness changes; not release acceptance or full CI.' > "$evidence/purpose.txt"
-      - name: Run the existing signature and isolated lifecycle checks
+          git rev-parse HEAD > "$evidence/source-commit.txt"
+          sw_vers > "$evidence/macos.txt"
+          uname -m > "$evidence/architecture.txt"
+          xcodebuild -version > "$evidence/xcode.txt"
+          find Scripts/diagnostics/webkit-ab -type f -exec shasum -a 256 {} \; > "$evidence/workflow-source.sha256"
+          printf '%s\n' 'Public-API-only WebKit configuration control; no private selectors or baseline configuration compiled; not production app validation or release acceptance.' > "$evidence/purpose.txt"
+      - name: Run up to 90 fresh process launches with bounded failure diagnostics
         env:
           CI_ISOLATED_RUNNER: ${{ runner.environment }}
-          CI_RUNTIME_ARCH: arm64
         run: |
           set -euo pipefail
-          tested="$GITHUB_WORKSPACE/tested-source"
-          CI_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/runtime-diagnosis/input" GITHUB_WORKSPACE="$tested" "$tested/Scripts/ci-runtime-smoke.sh" "$RUNNER_TEMP/runtime-diagnosis/input" 2>&1 | tee "$RUNNER_TEMP/runtime-diagnosis/diagnosis.log"
-      - name: Preserve diagnostic evidence
+          bash Scripts/diagnostics/webkit-ab/run.sh "$DIAGNOSTIC_VARIANT" "$RUNNER_TEMP/webkit-ab-evidence" 90 2>&1 | tee "$RUNNER_TEMP/webkit-ab-evidence/driver.log"
+      - name: Preserve diagnostic source hashes and runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: runtime-diagnosis-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/runtime-diagnosis/*.json
-            ${{ runner.temp }}/runtime-diagnosis/*.txt
-            ${{ runner.temp }}/runtime-diagnosis/*.diff
-            ${{ runner.temp }}/runtime-diagnosis/*.sha256
-            ${{ runner.temp }}/runtime-diagnosis/*.log
-            ${{ runner.temp }}/runtime-diagnosis/input/window-*.png
-            ${{ runner.temp }}/runtime-diagnosis/input/window-capture.log
-            ${{ runner.temp }}/runtime-diagnosis/input/runtime.log
-            ${{ runner.temp }}/runtime-diagnosis/input/runtime-macos.txt
-            ${{ runner.temp }}/runtime-diagnosis/input/runtime-architecture.txt
-            ${{ runner.temp }}/runtime-diagnosis/input/commit.txt
-            ${{ runner.temp }}/runtime-diagnosis/input/kmd-release.zip.sha256
-            ${{ runner.temp }}/runtime-diagnosis/input/diagnostics/*.ips
+          name: webkit-platform-${{ matrix.variant }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/webkit-ab-evidence
           if-no-files-found: error
           retention-days: 7
