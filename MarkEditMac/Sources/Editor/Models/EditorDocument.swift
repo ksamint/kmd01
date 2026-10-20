@@ -240,8 +240,8 @@ extension EditorDocument {
     // Concurrent reads let AppKit construct and read the document on its
     // document-opening queue (window restoration and autosaved drafts take a
     // path AppDocumentController does not hop to main), where the main-actor
-    // overrides below trap under Swift 6. Decoding already happens off the
-    // main thread inside read(from:ofType:), so nothing is lost.
+    // overrides below trap under Swift 6. Reads must also finish populating the
+    // document before returning, so immediate saves cannot write empty content.
     false
   }
 
@@ -406,26 +406,19 @@ extension EditorDocument {
 
 extension EditorDocument {
   override func read(from data: Data, ofType typeName: String) throws {
-    let suggestedEncoding = MainActor.assumeIsolated {
-      AppDocumentController.suggestedTextEncoding
-    }
-    let defaultEncoding = MainActor.assumeIsolated {
-      AppPreferences.General.defaultTextEncoding
-    }
-    DispatchQueue.global(qos: .userInitiated).async {
-      let newValue = {
-        if let encoding = suggestedEncoding {
-          return encoding.decode(data: data)
-        }
-
-        return defaultEncoding.decode(data: data, guessEncoding: true)
-      }()
-
-      DispatchQueue.main.async {
-        self.fileData = data
-        self.stringValue = newValue
-        self.hostViewController?.representedObject = self
+    // NSDocument may save or restore the document as soon as this returns.
+    // Publishing the decoded state later would let those paths write empty or
+    // stale text, and a late read callback could overwrite an intervening edit.
+    MainActor.assumeIsolated {
+      let newValue: String
+      if let encoding = AppDocumentController.suggestedTextEncoding {
+        newValue = encoding.decode(data: data)
+      } else {
+        newValue = AppPreferences.General.defaultTextEncoding.decode(data: data, guessEncoding: true)
       }
+      fileData = data
+      stringValue = newValue
+      hostViewController?.representedObject = self
     }
   }
 

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 Scripts/test-document-readiness.py
 test_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/swift-stability.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 swiftc -swift-version 6 -D STABILITY_STANDALONE -parse-as-library \
