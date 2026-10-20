@@ -197,6 +197,13 @@ verify_restoration() {
   check_crashes
 }
 
+saved_payload_matches() {
+  # Accept only the complete payload, with at most one terminal LF.
+  # A matching line within additional text is not a successful save.
+  printf '%s' "$payload" | cmp -s - "$fixture" ||
+    printf '%s\n' "$payload" | cmp -s - "$fixture"
+}
+
 launch
 # Opening a second document exercises the NSDocument read path that previously
 # violated EditorDocument's actor isolation. Writing also exercises its save path.
@@ -212,7 +219,7 @@ while [ "$iteration" -le 30 ]; do
   # Saving may normalize the final newline. Preserve the resulting bytes and
   # require this cycle's distinct payload before using them as the restore oracle.
   save_deadline=$(($(date +%s) + 20))
-  while ! grep -Fx "$payload" "$fixture" >/dev/null; do
+  while ! saved_payload_matches; do
     check_crashes
     if [ "$(date +%s)" -ge "$save_deadline" ]; then
       echo "Timed out waiting for lifecycle $iteration to save its new content" >&2
