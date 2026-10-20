@@ -4,6 +4,29 @@ import WebKit
 // Only framework/bridge doubles live here. The driver inserts the production
 // transaction, refresh, callbacks, serialization and Save All/quit aggregation.
 #if !SDK_CHECK
+// Wait for the observed event, not an assumed scheduler latency. The Python
+// driver still bounds the entire process, including a missing callback.
+@MainActor
+private final class TestCompletion {
+  private var value: Bool?
+  private var continuation: CheckedContinuation<Bool, Never>?
+
+  func wait() async -> Bool {
+    if let value { return value }
+    return await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func finish(_ value: Bool) {
+    if case .some = self.value { preconditionFailure("Callback delivered twice") }
+    self.value = value
+    let pending = continuation
+    continuation = nil
+    pending?.resume(returning: value)
+  }
+}
+
 @MainActor
 private class NSDocument: NSObject {
   enum SaveOperationType { case saveOperation, saveAsOperation, autosaveAsOperation }
@@ -95,9 +118,13 @@ private final class NSScriptCommand {
   var scriptErrorString: String?
   var didSuspend = false
   var resumeCount = 0
+  let completion = TestCompletion()
 
   func suspendExecution() { didSuspend = true }
-  func resumeExecution(withResult: Any?) { resumeCount += 1 }
+  func resumeExecution(withResult: Any?) {
+    resumeCount += 1
+    completion.finish(true)
+  }
 }
 #endif
 
@@ -252,9 +279,11 @@ private final class NSApplication {
   enum TerminateReply { case terminateLater, terminateNow }
 
   var shouldTerminate: Bool?
+  let completion = TestCompletion()
 
   func reply(toApplicationShouldTerminate value: Bool) {
     shouldTerminate = value
+    completion.finish(value)
   }
 }
 
@@ -262,10 +291,12 @@ private final class NSApplication {
 private final class CloseRecorder: NSObject {
   var result: Bool?
   var context: UnsafeMutableRawPointer?
+  let completion = TestCompletion()
 
   @objc func document(_ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) {
     result = shouldClose
     context = contextInfo
+    completion.finish(shouldClose)
   }
 }
 
@@ -318,7 +349,7 @@ private enum DocumentSavingTestMain {
     let delegateSave = EditorDocument()
     let saveRecorder = CloseRecorder()
     delegateSave.save(withDelegate: saveRecorder, didSave: #selector(CloseRecorder.document(_:shouldClose:contextInfo:)), contextInfo: nil)
-    try await Task.sleep(for: .milliseconds(80))
+    _ = await saveRecorder.completion.wait()
     precondition(saveRecorder.result == true && delegateSave.written == "latest editor text\n")
 
     let missing = EditorDocument()
@@ -355,14 +386,17 @@ private enum DocumentSavingTestMain {
     let close = CloseRecorder()
     let context = UnsafeMutableRawPointer(bitPattern: 1234)
     missing.canClose(withDelegate: close, shouldClose: #selector(CloseRecorder.document(_:shouldClose:contextInfo:)), contextInfo: context)
-    try await Task.sleep(for: .milliseconds(30))
+    _ = await close.completion.wait()
     precondition(close.result == false && close.context == context && missing.closeRequests == 0)
 
     let failedClose = EditorDocument()
     failedClose.saveSucceeds = false
+    // Deliberately exceed the old 80 ms assertion delay. Close still must report
+    // NO and retain dirty state after the actual failed write callback arrives.
+    failedClose.saveDelay = 0.15
     let failedCloseRecorder = CloseRecorder()
     failedClose.canClose(withDelegate: failedCloseRecorder, shouldClose: #selector(CloseRecorder.document(_:shouldClose:contextInfo:)), contextInfo: context)
-    try await Task.sleep(for: .milliseconds(80))
+    _ = await failedCloseRecorder.completion.wait()
     precondition(failedCloseRecorder.result == false && failedClose.closeRequests == 0 && failedClose.isDocumentEdited)
 
     let nativeCancel = EditorDocument()
@@ -373,7 +407,7 @@ private enum DocumentSavingTestMain {
     nativeCancel.isTerminating = true
     let nativeClose = CloseRecorder()
     nativeCancel.canClose(withDelegate: nativeClose, shouldClose: #selector(CloseRecorder.document(_:shouldClose:contextInfo:)), contextInfo: context)
-    try await Task.sleep(for: .milliseconds(30))
+    _ = await nativeClose.completion.wait()
     precondition(nativeClose.result == false && nativeClose.context == context && !nativeCancel.isTerminating)
 
     let nativeDiscard = EditorDocument()
@@ -381,7 +415,7 @@ private enum DocumentSavingTestMain {
     nativeDiscard.isOutdated = false
     let discard = CloseRecorder()
     nativeDiscard.canClose(withDelegate: discard, shouldClose: #selector(CloseRecorder.document(_:shouldClose:contextInfo:)), contextInfo: context)
-    try await Task.sleep(for: .milliseconds(30))
+    _ = await discard.completion.wait()
     precondition(discard.result == true && discard.context == context && nativeDiscard.saveRequests == 0)
 
     let script = NSScriptCommand()
@@ -389,7 +423,7 @@ private enum DocumentSavingTestMain {
     let destination = URL(fileURLWithPath: "/not-written/script.txt")
     _ = scripted.saveScriptCommand(script, destination: (destination, "public.plain-text"))
     precondition(script.didSuspend && script.resumeCount == 0)
-    try await Task.sleep(for: .milliseconds(100))
+    _ = await script.completion.wait()
     precondition(script.resumeCount == 1 && script.scriptErrorNumber == 0)
     precondition(scripted.written == "latest editor text\n" && scripted.fileURL == destination)
 
@@ -397,7 +431,7 @@ private enum DocumentSavingTestMain {
     let scriptFailure = EditorDocument()
     scriptFailure.saveSucceeds = false
     _ = scriptFailure.saveScriptCommand(failedScript, destination: (destination, "public.plain-text"))
-    try await Task.sleep(for: .milliseconds(100))
+    _ = await failedScript.completion.wait()
     precondition(failedScript.didSuspend && failedScript.resumeCount == 1 && failedScript.scriptErrorNumber != 0)
     precondition(scriptFailure.written == nil && scriptFailure.isDocumentEdited)
 
@@ -422,7 +456,7 @@ private enum DocumentSavingTestMain {
     let application = NSApplication()
     let appDelegate = AppDelegate()
     precondition(appDelegate.applicationShouldTerminate(application) == .terminateLater)
-    try await Task.sleep(for: .milliseconds(80))
+    _ = await application.completion.wait()
     precondition(application.shouldTerminate == false && !failed.isTerminating)
 
     failed.saveSucceeds = true
