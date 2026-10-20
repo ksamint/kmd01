@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   diagnose:
-    name: Existing macOS 15 artifact with recorded harness changes
-    runs-on: macos-15
+    name: Existing macOS 26 artifact with recorded harness changes
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,12 +30,12 @@ jobs:
           set -euo pipefail
           evidence="$RUNNER_TEMP/runtime-diagnosis"
           mkdir -p "$evidence"
-          gh api repos/ksamint/kmd01/actions/artifacts/12264371679 > "$evidence/artifact-metadata.json"
-          jq -e '.id == 12264371679 and .name == "macos-15-release" and .expired == false and .workflow_run.id == 39421305857 and .workflow_run.head_sha == "c2f5e13c3ece3410765ae64e93252330d2c2f2c6" and .digest == "sha256:1e5be8b007d575efbe37a0b962b5fddf0b6d9a20c8ca50621bfbfd41ff39b0d5"' "$evidence/artifact-metadata.json"
-          gh run download 39421305857 --repo ksamint/kmd01 --name macos-15-release --dir "$evidence/input"
+          gh api repos/ksamint/kmd01/actions/artifacts/12264096816 > "$evidence/artifact-metadata.json"
+          jq -e '.id == 12264096816 and .name == "macos-26-release" and .expired == false and .workflow_run.id == 39421305857 and .workflow_run.head_sha == "c2f5e13c3ece3410765ae64e93252330d2c2f2c6" and .digest == "sha256:b2598d18d5c0c23f6843ac14409cd8a4400b6aed0304d46b836e8b0a5fdc870a"' "$evidence/artifact-metadata.json"
+          gh run download 39421305857 --repo ksamint/kmd01 --name macos-26-release --dir "$evidence/input"
           cd "$evidence/input"
           test "$(cat commit.txt)" = e7a6152a558b5461ce24910cc970a6a8d9e64880
-          test "$(shasum -a 256 kmd-release.zip | awk '{print $1}')" = af0752e7d06a19e3b46fbc9de791e0153fcce5b523b70237d99e156032a57510
+          test "$(shasum -a 256 kmd-release.zip | awk '{print $1}')" = f19655f38c8c8f63ee7cefcc20500e1d201478bb92609381c79968acef2c0ca1
           shasum -a 256 -c kmd-release.zip.sha256
           # Keep prior-run runtime evidence separate from this diagnostic result.
           rm -f runtime.log runtime-macos.txt runtime-architecture.txt
