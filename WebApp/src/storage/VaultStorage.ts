@@ -321,8 +321,28 @@ export class VaultStorage {
         metadata: parseMetadata(file.content),
       };
     });
+    // Re-encrypting every note on every sync and leaving replaced objects
+    // behind made each sync O(workspace) in crypto and grew OPFS forever.
+    const previousNotes = new Map(
+      this.manifest.files
+        .filter(file => file.kind !== 'attachment')
+        .map(file => [file.id, file] as const),
+    );
     for (const file of normalized) {
-      await this.writeContent(file, file.content);
+      const previous = previousNotes.get(file.id);
+      const unchanged = previous !== undefined
+        && typeof previous.contentDigest === 'string'
+        && previous.contentDigest.length > 0
+        && previous.contentDigest === file.contentDigest
+        && previous.byteSize === file.byteSize;
+      if (!unchanged) {
+        await this.writeContent(file, file.content);
+      }
+    }
+    for (const id of previousNotes.keys()) {
+      if (!ids.has(id)) {
+        await deleteObject(this.opfsRoot, this.workspaceId, objectName(id));
+      }
     }
     const attachments = this.manifest.files.filter(file => file.kind === 'attachment');
     this.manifest.files = [
@@ -638,19 +658,38 @@ async function idbDelete(store: string, key: string): Promise<void> {
   });
 }
 
+let databaseConnection: Promise<IDBDatabase> | undefined;
+
 async function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(KEY_STORE)) {
-        database.createObjectStore(KEY_STORE);
-      }
-      if (!database.objectStoreNames.contains(FALLBACK_STORE)) {
-        database.createObjectStore(FALLBACK_STORE);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  if (databaseConnection === undefined) {
+    databaseConnection = new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(KEY_STORE)) {
+          database.createObjectStore(KEY_STORE);
+        }
+        if (!database.objectStoreNames.contains(FALLBACK_STORE)) {
+          database.createObjectStore(FALLBACK_STORE);
+        }
+      };
+      request.onsuccess = () => {
+        const database = request.result;
+        const forget = () => {
+          databaseConnection = undefined;
+        };
+        database.onversionchange = () => {
+          database.close();
+          forget();
+        };
+        database.onclose = forget;
+        resolve(database);
+      };
+      request.onerror = () => reject(request.error);
+    });
+    databaseConnection.catch(() => {
+      databaseConnection = undefined;
+    });
+  }
+  return databaseConnection;
 }

@@ -76,7 +76,8 @@ enum ClipboardStorageEnvironment {
     Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true
   }
 
-  static var hasAppGroupEntitlement: Bool {
+  // Entitlements cannot change while the process runs; resolve once.
+  static let hasAppGroupEntitlement: Bool = {
     guard let task = SecTaskCreateFromSelf(nil),
           let groups = SecTaskCopyValueForEntitlement(
             task,
@@ -84,7 +85,7 @@ enum ClipboardStorageEnvironment {
             nil
           ) as? [String] else { return false }
     return groups.contains(appGroupIdentifier)
-  }
+  }()
 
   static func developmentKey(named fileName: String) throws -> SymmetricKey {
     guard isDevelopmentBundle else { throw CocoaError(.fileWriteNoPermission) }
@@ -202,6 +203,7 @@ final class ClipboardHistoryStore {
   private let overrideJournalURL: URL?
   private let overrideLegacyURL: URL?
   private let overrideKey: SymmetricKey?
+  private var cachedHistoryKey: SymmetricKey?
   private(set) var items = [ClipboardHistoryItem]()
   private(set) var tags = [ClipboardUserTag]()
   private var itemPositions = [String: Int]()
@@ -466,15 +468,19 @@ private extension ClipboardHistoryStore {
     var decodedAny = false
     journalByteCount = 0
     journalRecordCount = 0
+    // One Keychain round-trip and one decoder for the whole journal, not one
+    // per record; a long journal used to pay thousands of securityd calls.
+    guard let key = try? historyKey() else { return .corrupt }
+    let decoder = JSONDecoder()
     while let header = readExactly(4, from: handle) {
       let length = Int(header[0]) | (Int(header[1]) << 8)
         | (Int(header[2]) << 16) | (Int(header[3]) << 24)
       guard length > 0, length <= Self.maximumJournalRecordBytes,
             let record = readExactly(length, from: handle) else { break }
       guard let sealed = try? AES.GCM.SealedBox(combined: record),
-            let plaintext = try? AES.GCM.open(sealed, using: historyKey()) else { break }
-      let events = (try? JSONDecoder().decode([ClipboardHistoryJournalEvent].self, from: plaintext))
-        ?? (try? [JSONDecoder().decode(ClipboardHistoryJournalEvent.self, from: plaintext)])
+            let plaintext = try? AES.GCM.open(sealed, using: key) else { break }
+      let events = (try? decoder.decode([ClipboardHistoryJournalEvent].self, from: plaintext))
+        ?? (try? [decoder.decode(ClipboardHistoryJournalEvent.self, from: plaintext)])
       guard let events else { break }
       events.forEach(apply)
       decodedAny = true
@@ -714,6 +720,13 @@ private extension ClipboardHistoryStore {
 
   func historyKey() throws -> SymmetricKey {
     if let overrideKey { return overrideKey }
+    if let cachedHistoryKey { return cachedHistoryKey }
+    let key = try resolveHistoryKey()
+    cachedHistoryKey = key
+    return key
+  }
+
+  private func resolveHistoryKey() throws -> SymmetricKey {
     if !ClipboardStorageEnvironment.hasAppGroupEntitlement {
       return try ClipboardStorageEnvironment.developmentKey(named: "clipboard-history-v1.key")
     }

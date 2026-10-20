@@ -188,9 +188,11 @@ export function searchCounterInfo(): SearchCounterInfo {
     };
   }
 
+  // One scan of the document serves both numbers.
+  const ranges = getQueryRanges();
   return {
-    numberOfItems: getQueryRanges().length as CodeGen_Int,
-    currentIndex: currentMatchIndex() as CodeGen_Int,
+    numberOfItems: ranges.length as CodeGen_Int,
+    currentIndex: currentMatchIndex(ranges) as CodeGen_Int,
   };
 }
 
@@ -265,14 +267,13 @@ function getQueryRanges(query?: SearchQuery) {
   return rangesFromQuery(query ?? getSearchQuery(window.editor.state));
 }
 
-function currentMatchIndex() {
+function currentMatchIndex(ranges = getQueryRanges()) {
   const element = searchMatchElement();
   if (element === null) {
     return -1; // Invalid result of Array.findIndex too
   }
 
   const position = window.editor.posAtDOM(element);
-  const ranges = getQueryRanges();
   return ranges.findIndex(({ from }) => from === position);
 }
 

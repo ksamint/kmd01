@@ -243,14 +243,39 @@ function splitTableRow(line: string): string[] {
   return cells;
 }
 
+// Table cells are re-rendered with the whole document; most of them are
+// unchanged between renders, so their HTML is cached by source text. The
+// cache is scoped to the current reference definitions, which are the only
+// other input the inline renderer depends on.
+const inlineCache = {
+  referencesKey: '',
+  entries: new Map<string, string>(),
+};
+const inlineCacheLimit = 20_000;
+
 function renderInline(source: string, context: RenderContext): string {
-  const tree = markdownLanguage.parser.parse(source);
-  const paragraph = tree.topNode.firstChild;
-  if (paragraph === null) {
-    return escapeHTML(source);
+  const referencesKey = [...context.references].map(([label, url]) => `${label}\u{0}${url}`).join('\n');
+  if (inlineCache.referencesKey !== referencesKey) {
+    inlineCache.referencesKey = referencesKey;
+    inlineCache.entries.clear();
   }
 
-  return renderChildren(paragraph, { ...context, source }, new Set()).trim();
+  const cached = inlineCache.entries.get(source);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const tree = markdownLanguage.parser.parse(source);
+  const paragraph = tree.topNode.firstChild;
+  const rendered = paragraph === null
+    ? escapeHTML(source)
+    : renderChildren(paragraph, { ...context, source }, new Set()).trim();
+
+  if (inlineCache.entries.size >= inlineCacheLimit) {
+    inlineCache.entries.clear();
+  }
+  inlineCache.entries.set(source, rendered);
+  return rendered;
 }
 
 function renderFencedCode(source: string, position: string): string {

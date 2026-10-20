@@ -57,7 +57,15 @@ export function createWidgetDeco(nodeName: string | string[], builder: (node: Sy
  * @param className Class to decorate the node
  */
 export function createLineDeco(nodeName: string | string[], className: string, attributes?: { [key: string]: string }) {
-  return createDecos(nodeName, node => lineDecoRanges(node.from, node.to, className, attributes));
+  return createDecos(nodeName, node => {
+    // Only lines that can be drawn need a decoration. A fenced block or table
+    // that merely overlaps the viewport used to produce one for every line it
+    // spans, on every view update.
+    const visibleRanges = window.editor.visibleRanges;
+    const from = Math.max(node.from, visibleRanges[0]?.from ?? node.from);
+    const to = Math.min(node.to, visibleRanges[visibleRanges.length - 1]?.to ?? node.to);
+    return from > to ? null : lineDecoRanges(from, to, className, attributes);
+  });
 }
 
 /**

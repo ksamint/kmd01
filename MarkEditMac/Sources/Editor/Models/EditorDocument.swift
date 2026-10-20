@@ -237,7 +237,12 @@ extension EditorDocument {
   }
 
   override class func canConcurrentlyReadDocuments(ofType type: String) -> Bool {
-    true
+    // Concurrent reads let AppKit construct and read the document on its
+    // document-opening queue (window restoration and autosaved drafts take a
+    // path AppDocumentController does not hop to main), where the main-actor
+    // overrides below trap under Swift 6. Decoding already happens off the
+    // main thread inside read(from:ofType:), so nothing is lost.
+    false
   }
 
   override var fileURL: URL? {

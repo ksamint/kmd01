@@ -5,7 +5,7 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language';
 import { markdown } from '@codemirror/lang-markdown';
-import { Compartment, EditorState } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, Transaction } from '@codemirror/state';
 import {
   drawSelection,
   EditorView,
@@ -14,6 +14,9 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view';
+
+/** Marks document replacements made by the host rather than by the user. */
+const programmaticChange = Annotation.define<boolean>();
 
 export type StandaloneEditorOptions = {
   parent: HTMLElement;
@@ -52,7 +55,16 @@ export function createStandaloneMarkdownEditor(
         keymap.of([indentWithTab, ...defaultKeymap, ...historyKeymap]),
         readOnly.of(EditorState.readOnly.of(options.readOnly ?? false)),
         EditorView.updateListener.of(update => {
-          if (update.docChanged) {
+          if (!update.docChanged) {
+            return;
+          }
+          // setText() replaces the document when the host switches notes or
+          // applies a sync result; reporting that as an edit made every file
+          // open look modified and queued a redundant save.
+          const programmatic = update.transactions.some(
+            transaction => transaction.annotation(programmaticChange) === true,
+          );
+          if (!programmatic) {
             options.onChange?.(update.state.doc.toString());
           }
         }),
@@ -70,6 +82,11 @@ export function createStandaloneMarkdownEditor(
       }
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },
+        annotations: [
+          programmaticChange.of(true),
+          // Undo must never restore a different note's text into this one.
+          Transaction.addToHistory.of(false),
+        ],
       });
     },
     setReadOnly: value => {

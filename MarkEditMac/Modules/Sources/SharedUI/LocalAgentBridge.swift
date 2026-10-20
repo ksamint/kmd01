@@ -478,39 +478,15 @@ private extension LocalAgentBridge {
     from handle: FileHandle,
     consume: @escaping @Sendable (String) async -> Void
   ) async throws {
-    var pending = Data()
-    var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-    while !Task.isCancelled {
-      let count = buffer.withUnsafeMutableBytes { bytes in
-        Darwin.read(handle.fileDescriptor, bytes.baseAddress, bytes.count)
+    // FileHandle.bytes reads on its own I/O queue and suspends between chunks.
+    // A blocking Darwin.read here pinned one cooperative-pool thread per
+    // stream for the life of the session, and the pool never grows beyond the
+    // core count, so a couple of Agent panels could starve every actor.
+    for try await line in handle.bytes.lines {
+      guard !Task.isCancelled else {
+        return
       }
-      if count < 0 {
-        if errno == EINTR {
-          continue
-        }
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-      }
-      guard count > 0 else {
-        break
-      }
-      pending.append(buffer, count: count)
-      while let newline = pending.firstIndex(of: 0x0A) {
-        var line = Data(pending[..<newline])
-        pending.removeSubrange(...newline)
-        if line.last == 0x0D {
-          line.removeLast()
-        }
-        guard let value = String(data: line, encoding: .utf8) else {
-          throw BridgeFailure.invalidResponse
-        }
-        await consume(value)
-      }
-    }
-    if !Task.isCancelled, !pending.isEmpty {
-      guard let value = String(data: pending, encoding: .utf8) else {
-        throw BridgeFailure.invalidResponse
-      }
-      await consume(value)
+      await consume(line)
     }
   }
 

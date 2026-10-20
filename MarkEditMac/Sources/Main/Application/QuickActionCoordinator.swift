@@ -517,13 +517,17 @@ actor FormatConversionService: ConversionProvider {
     process.standardOutput = output
     process.standardError = errors
     try process.run()
+    // Drain stdout before waiting: a listing larger than the pipe buffer
+    // (a few thousand entries) would otherwise block the child forever while
+    // we wait for it to exit. Diagnostics on stderr stay small.
+    let listingData = output.fileHandleForReading.readDataToEndOfFile()
+    let errorData = errors.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
-      let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+      let detail = String(data: errorData, encoding: .utf8)
       throw QuickActionError.archiveListing(detail ?? "Archive listing failed")
     }
-    let listing =
-      String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let listing = String(data: listingData, encoding: .utf8) ?? ""
     let entries = listing.split(whereSeparator: \.isNewline).prefix(200_000)
     return "# \(url.lastPathComponent)\n\n" + entries.map { "- `\($0)`" }.joined(separator: "\n")
       + "\n"

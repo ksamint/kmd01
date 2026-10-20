@@ -48,10 +48,29 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
   private let listener: Int32
   private let capability: String
   private let server: LocalMCPServer
-  private let acceptTask: Task<Void, Never>
+  private let acceptThread: Thread
+  private let stopFlag = StopFlag()
   private let runtimeDirectory: URL
   private let stateLock = NSLock()
   private var stopped = false
+
+  /// Shared between `stop()` and the accept thread.
+  final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      return value
+    }
+
+    func set() {
+      lock.lock()
+      value = true
+      lock.unlock()
+    }
+  }
 
   public static func start(
     workspaceURL: URL,
@@ -108,43 +127,61 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
     self.capability = capability
     self.server = server
     self.runtimeDirectory = runtimeDirectory
-    self.acceptTask = Task.detached(priority: .utility) {
-      while !Task.isCancelled {
-        var readiness = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-        let ready = Darwin.poll(&readiness, 1, 250)
-        if Task.isCancelled {
-          break
-        }
-        if ready == 0 {
+
+    // The accept loop and each connection block in poll/read/write. They run
+    // on dedicated threads rather than detached tasks so they never occupy
+    // the fixed-size cooperative pool that every actor in the app shares.
+    let stopFlag = self.stopFlag
+    let thread = Thread {
+      Self.acceptLoop(listener: listener, capability: capability, server: server, stopFlag: stopFlag)
+    }
+    thread.name = "kmd.mcp.accept"
+    thread.qualityOfService = .utility
+    self.acceptThread = thread
+    thread.start()
+  }
+
+  private static func acceptLoop(
+    listener: Int32,
+    capability: String,
+    server: LocalMCPServer,
+    stopFlag: StopFlag
+  ) {
+    while !stopFlag.isSet {
+      var readiness = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+      let ready = Darwin.poll(&readiness, 1, 250)
+      if stopFlag.isSet {
+        break
+      }
+      if ready == 0 {
+        continue
+      }
+      if ready < 0 {
+        if errno == EINTR {
           continue
         }
-        if ready < 0 {
-          if errno == EINTR {
-            continue
-          }
-          break
-        }
-        guard readiness.revents & Int16(POLLIN) != 0 else {
-          break
-        }
-        let client = Darwin.accept(listener, nil, nil)
-        if client < 0 {
-          if errno == EINTR {
-            continue
-          }
-          break
-        }
-        Task.detached(priority: .utility) {
-          defer {
-            Darwin.close(client)
-          }
-          try? await Self.serve(
-            client: client,
-            capability: capability,
-            server: server
-          )
-        }
+        break
       }
+      guard readiness.revents & Int16(POLLIN) != 0 else {
+        break
+      }
+      let client = Darwin.accept(listener, nil, nil)
+      if client < 0 {
+        if errno == EINTR {
+          continue
+        }
+        break
+      }
+      SocketIO.disableSIGPIPE(client)
+      let connection = Thread {
+        defer {
+          Darwin.close(client)
+        }
+        try? Self.serve(client: client, capability: capability, server: server)
+      }
+      connection.name = "kmd.mcp.connection"
+      connection.qualityOfService = .utility
+      connection.start()
     }
   }
 
@@ -160,7 +197,7 @@ public final class LocalMCPUnixServer: @unchecked Sendable {
     }
     stopped = true
     stateLock.unlock()
-    acceptTask.cancel()
+    stopFlag.set()
     Darwin.shutdown(listener, SHUT_RDWR)
     Darwin.close(listener)
     Darwin.unlink(connectionInfo.socketPath)
@@ -210,7 +247,24 @@ public enum LocalMCPUnixClient {
 }
 
 private extension LocalMCPUnixServer {
-  static func serve(client: Int32, capability: String, server: LocalMCPServer) async throws {
+  final class ResponseBox: @unchecked Sendable {
+    var value = Data()
+  }
+
+  /// Runs on a dedicated connection thread; blocking here is intentional and
+  /// keeps the socket loop off the cooperative pool.
+  static func response(for request: Data, server: LocalMCPServer) -> Data {
+    let box = ResponseBox()
+    let semaphore = DispatchSemaphore(value: 0)
+    Task {
+      box.value = await server.responseData(for: request)
+      semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value
+  }
+
+  static func serve(client: Int32, capability: String, server: LocalMCPServer) throws {
     var input = Data()
     guard let authData = try SocketIO.readLine(
       from: client,
@@ -227,7 +281,7 @@ private extension LocalMCPUnixServer {
       buffer: &input,
       maximumBytes: maximumRequestBytes
     ) {
-      let response = await server.responseData(for: request)
+      let response = Self.response(for: request, server: server)
       guard response.count <= maximumResponseBytes else {
         throw BridgeError.messageTooLarge
       }
@@ -288,7 +342,21 @@ private enum SocketIO {
       Darwin.close(descriptor)
       throw LocalMCPUnixServer.BridgeError.socketFailure("connect")
     }
+    disableSIGPIPE(descriptor)
     return descriptor
+  }
+
+  /// Writes to a peer that has gone away must fail with EPIPE, not kill the
+  /// process; `Application.main` also ignores SIGPIPE globally.
+  static func disableSIGPIPE(_ descriptor: Int32) {
+    var enabled: Int32 = 1
+    _ = Darwin.setsockopt(
+      descriptor,
+      SOL_SOCKET,
+      SO_NOSIGPIPE,
+      &enabled,
+      socklen_t(MemoryLayout<Int32>.size)
+    )
   }
 
   static func readLine(

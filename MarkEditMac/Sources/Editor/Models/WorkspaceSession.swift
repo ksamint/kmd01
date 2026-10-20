@@ -149,6 +149,8 @@ final class WorkspaceSession {
   private let bookmark: Data
   private let filePresenter: WorkspaceFilePresenter
   private var refreshTask: Task<Void, Never>?
+  private var rebuildTask: Task<Void, Never>?
+  private var rebuildRequestedWhileRunning = false
 
   init(rootURL: URL, bookmark: Data, isAuthorized: Bool) {
     let standardizedRoot = rootURL.standardizedFileURL
@@ -236,19 +238,31 @@ final class WorkspaceSession {
     }
 
     onIndexStateChange?(.indexing)
-    Task { [weak self] in
+    guard rebuildTask == nil else {
+      // A rebuild is already walking the tree; run one more afterwards so a
+      // change made meanwhile is still picked up, without stacking rebuilds.
+      rebuildRequestedWhileRunning = true
+      return
+    }
+
+    rebuildTask = Task { [weak self] in
       guard let self else {
         return
       }
 
       do {
         let fileCount = try await index.rebuild()
-        guard !Task.isCancelled else {
-          return
+        if !Task.isCancelled {
+          onIndexStateChange?(.ready(fileCount: fileCount))
         }
-        onIndexStateChange?(.ready(fileCount: fileCount))
       } catch {
         onIndexStateChange?(.failed)
+      }
+
+      rebuildTask = nil
+      if rebuildRequestedWhileRunning {
+        rebuildRequestedWhileRunning = false
+        rebuildIndex()
       }
     }
   }

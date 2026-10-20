@@ -172,9 +172,11 @@ final class ConversationCaptureCoordinator: NSObject {
   }
 
   private func preferredText(from pasteboard: NSPasteboard) -> String? {
-    let value = attributedClipboardText(from: pasteboard, type: .html, documentType: .html)
+    // Plain text first: importing HTML through WebKit on the main thread is
+    // expensive and happens on every clipboard change while capture is on.
+    let value = pasteboard.string(forType: .string).flatMap { $0.isEmpty ? nil : $0 }
+      ?? attributedClipboardText(from: pasteboard, type: .html, documentType: .html)
       ?? attributedClipboardText(from: pasteboard, type: .rtf, documentType: .rtf)
-      ?? pasteboard.string(forType: .string)
     guard let value, let size = value.data(using: .utf8)?.count,
           size > 0, size <= Self.maximumClipboardBytes else { return nil }
     return value

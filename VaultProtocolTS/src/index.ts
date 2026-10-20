@@ -984,7 +984,11 @@ async function deriveVaultKey(
 }
 
 class CborEncoder {
-  private bytesValue: number[] = [];
+  // A growable byte buffer. Spreading a Uint8Array into Array.prototype.push
+  // passes every byte as a call argument and overflows the call stack at
+  // roughly 128 KB, which made sealing any larger note or attachment throw.
+  private buffer = new Uint8Array(4096);
+  private length = 0;
 
   unsigned(value: number) {
     this.major(0, value);
@@ -992,13 +996,13 @@ class CborEncoder {
 
   bytes(value: Uint8Array) {
     this.major(2, value.length);
-    this.bytesValue.push(...value);
+    this.append(value);
   }
 
   text(value: string) {
     const encoded = new TextEncoder().encode(value);
     this.major(3, encoded.length);
-    this.bytesValue.push(...encoded);
+    this.append(encoded);
   }
 
   array(count: number) {
@@ -1010,15 +1014,43 @@ class CborEncoder {
   }
 
   null() {
-    this.bytesValue.push(0xf6);
+    this.push(0xf6);
   }
 
   output(): Uint8Array {
-    return Uint8Array.from(this.bytesValue);
+    return this.buffer.slice(0, this.length);
   }
 
   raw(value: Uint8Array) {
-    this.bytesValue.push(...value);
+    this.append(value);
+  }
+
+  private ensureCapacity(extra: number) {
+    const required = this.length + extra;
+    if (required <= this.buffer.length) {
+      return;
+    }
+    let capacity = this.buffer.length * 2;
+    while (capacity < required) {
+      capacity *= 2;
+    }
+    const grown = new Uint8Array(capacity);
+    grown.set(this.buffer.subarray(0, this.length));
+    this.buffer = grown;
+  }
+
+  private push(...bytes: number[]) {
+    this.ensureCapacity(bytes.length);
+    for (const byte of bytes) {
+      this.buffer[this.length] = byte;
+      this.length += 1;
+    }
+  }
+
+  private append(value: Uint8Array) {
+    this.ensureCapacity(value.length);
+    this.buffer.set(value, this.length);
+    this.length += value.length;
   }
 
   private major(type: number, value: number) {
@@ -1027,13 +1059,13 @@ class CborEncoder {
     }
     const prefix = type << 5;
     if (value < 24) {
-      this.bytesValue.push(prefix | value);
+      this.push(prefix | value);
     } else if (value <= 0xff) {
-      this.bytesValue.push(prefix | 24, value);
+      this.push(prefix | 24, value);
     } else if (value <= 0xffff) {
-      this.bytesValue.push(prefix | 25, value >>> 8, value & 0xff);
+      this.push(prefix | 25, value >>> 8, value & 0xff);
     } else if (value <= 0xffffffff) {
-      this.bytesValue.push(
+      this.push(
         prefix | 26,
         (value >>> 24) & 0xff,
         (value >>> 16) & 0xff,
@@ -1043,7 +1075,7 @@ class CborEncoder {
     } else {
       const high = Math.floor(value / 0x1_0000_0000);
       const low = value % 0x1_0000_0000;
-      this.bytesValue.push(
+      this.push(
         prefix | 27,
         (high >>> 24) & 0xff,
         (high >>> 16) & 0xff,

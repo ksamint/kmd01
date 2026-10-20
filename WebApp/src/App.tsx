@@ -108,7 +108,12 @@ export default function App() {
   const openFileRequest = useRef(0);
   const selected = files.find(file => file.id === selectedId);
   const graph = useMemo(() => buildGraph(files), [files]);
-  const hits = useMemo(() => searchNotes(files, query), [files, query]);
+  // Folding every note for the search list is expensive; skip it while the
+  // search sidebar is closed.
+  const hits = useMemo(
+    () => (sidebar === 'search' ? searchNotes(files, query) : []),
+    [files, query, sidebar],
+  );
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -861,7 +866,7 @@ export default function App() {
                     />
                   </header>
                   <Suspense fallback={<RouteLoading />}>
-                    <CoreEditor value={selected.content} onChange={changeContent} />
+                    <CoreEditor key={selected.id} value={selected.content} onChange={changeContent} />
                   </Suspense>
                 </>
               ) : (
