@@ -128,7 +128,7 @@ function hostedUIFallback(mode, pid, fixture, normalize, newSource, trace) {
   // Check the separate System Events grant without requesting or modifying it.
   requireAutomationPermission(Number(running.processIdentifier), trace);
   const events = Application(Number(running.processIdentifier));
-  if (events.UIElementsEnabled() !== true) throw new Error('Existing Accessibility permission is unavailable');
+  if (events.uiElementsEnabled() !== true) throw new Error('Existing Accessibility permission is unavailable');
   const processes = events.processes.whose({ unixId: pid })();
   if (processes.length !== 1) throw new Error('Expected one System Events process with the exact app PID');
   const source = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(

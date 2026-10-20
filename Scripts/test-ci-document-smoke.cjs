@@ -232,14 +232,14 @@ assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'blocked']),
 eventsPermission = 0;
 global.Application = pid => {
   assert.equal(pid, 500);
-  return { UIElementsEnabled: () => false };
+  return { uiElementsEnabled: () => false };
 };
 assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'blocked']), /Accessibility permission/);
 axText.value = savedSource;
 global.Application = pid => {
   assert.equal(pid, 500);
   return {
-    ...systemEvents, UIElementsEnabled: () => true,
+    ...systemEvents, uiElementsEnabled: () => true,
     processes: { whose(query) { assert.deepEqual(query, { unixId: 103 }); return () => [axProcess]; } },
   };
 };
