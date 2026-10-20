@@ -125,6 +125,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!saving) return;
+    const warnUnsaved = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnUnsaved);
+    return () => window.removeEventListener('beforeunload', warnUnsaved);
+  }, [saving]);
+
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!event.metaKey) {
         return;
