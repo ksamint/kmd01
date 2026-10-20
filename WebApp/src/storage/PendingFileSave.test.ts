@@ -98,3 +98,67 @@ describe('PendingFileSave across files', () => {
     expect(writes).toEqual([['a', 'text of a'], ['b', 'text of b']]);
   });
 });
+
+describe('PendingFileSave failures across files', () => {
+  it('retains failed A while B is queued, then saves both on retry', async () => {
+    const persisted = new Map<string, string>();
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const writing = new Promise<void>(resolve => { started = resolve; });
+    let fail = true;
+    const saving = vi.fn();
+    const coordinator = new PendingFileSave(
+      async (id, content) => {
+        if (id === 'a' && fail) {
+          started();
+          await blocked;
+          throw new Error('Disk unavailable');
+        }
+        persisted.set(id, content);
+        return content;
+      },
+      () => undefined, saving, () => undefined, 60_000,
+    );
+    coordinator.queue('a', 'unsaved A');
+    const failed = expect(coordinator.flush()).rejects.toThrow('Disk unavailable');
+    await writing;
+    coordinator.queue('b', 'unsaved B');
+    release();
+    await failed;
+    expect(saving).toHaveBeenLastCalledWith(true);
+    await expect(coordinator.flush()).rejects.toThrow('Disk unavailable');
+    fail = false;
+    await coordinator.flush();
+    expect([...persisted]).toEqual([['a', 'unsaved A'], ['b', 'unsaved B']]);
+    expect(saving).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps newer text for A when an older in-flight write fails', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const writing = new Promise<void>(resolve => { started = resolve; });
+    let fail = true;
+    const saved = vi.fn();
+    const coordinator = new PendingFileSave(
+      async (_id, content) => {
+        if (fail) {
+          started();
+          await blocked;
+          throw new Error('Disk unavailable');
+        }
+        return content;
+      }, saved, () => undefined, () => undefined, 60_000,
+    );
+    coordinator.queue('a', 'older A');
+    const failed = expect(coordinator.flush()).rejects.toThrow('Disk unavailable');
+    await writing;
+    coordinator.queue('a', 'newer A');
+    release();
+    await failed;
+    fail = false;
+    await coordinator.flush();
+    expect(saved).toHaveBeenCalledExactlyOnceWith('newer A', { fileId: 'a', content: 'newer A' });
+  });
+});
