@@ -84,10 +84,12 @@ capture_failure() {
   sed -n 's/.*\[PID=\([0-9][0-9]*\)\] WebProcessProxy::didBecomeUnresponsive:.*/\1/p' \
     "$temporary/automation.log" | sort -u | head -4 | while IFS= read -r renderer_pid; do
       renderer_command=$(ps -p "$renderer_pid" -o comm= 2>/dev/null || true)
+      echo "Owned unresponsive renderer pid=$renderer_pid executable=$renderer_command" >&2
       case "$renderer_command" in
         */com.apple.WebKit.WebContent)
           diagnostic_command sample "$renderer_pid" 2 10 \
-            -file "$temporary/webcontent-$renderer_pid.log" >/dev/null 2>&1 ;;
+            -file "$temporary/webcontent-$renderer_pid.log" \
+            >"$temporary/webcontent-$renderer_pid-command.log" 2>&1 ;;
       esac
     done
   for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" \
@@ -237,9 +239,10 @@ cp "$fixture" "$temporary/saved.md"
 verify_restoration
 # Each launch after this point must use AppKit's saved window/document state.
 # No open event is sent, so a normal-open success cannot hide a restore failure.
+# Temporary diagnostic only: 90 cycles; integration acceptance stays at 30.
 iteration=1
-while [ "$iteration" -le 30 ]; do
-  payload="# Save smoke test: lifecycle $iteration/30"
+while [ "$iteration" -le 90 ]; do
+  payload="# Save smoke test: lifecycle $iteration/90"
   jxa save "$app" "$app_pid" "$fixture" "$payload"
   # Saving may normalize the final newline. Preserve the resulting bytes and
   # require this cycle's distinct payload before using them as the restore oracle.
@@ -263,8 +266,8 @@ while [ "$iteration" -le 30 ]; do
     exit 1
   fi
   verify_restoration
-  echo "Document modify/save/quit/restore lifecycle $iteration/30 passed (pid=$app_pid)"
+  echo "Document modify/save/quit/restore lifecycle $iteration/90 passed (pid=$app_pid)"
   iteration=$((iteration + 1))
 done
 
-echo 'Document open/save and 30 graceful quit/relaunch restoration cycles passed'
+echo 'Document open/save and 90 graceful quit/relaunch restoration cycles passed'

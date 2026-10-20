@@ -12,7 +12,7 @@ jobs:
   diagnose:
     name: Existing macOS 15 artifact with recorded harness changes
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,7 +52,7 @@ jobs:
           done
           git -C "$tested" diff -- Scripts/ci-document-smoke.js Scripts/test-document-open-smoke.sh > "$evidence/harness.diff"
           (cd "$tested" && shasum -a 256 Scripts/ci-document-smoke.js Scripts/test-document-open-smoke.sh) > "$evidence/harness.sha256"
-          printf '%s\n' 'Diagnostic only: unchanged prior-build app, recorded harness changes; not release acceptance or full CI.' > "$evidence/purpose.txt"
+          printf '%s\n' 'Diagnostic only: 90 cycles with unchanged prior-build app, recorded harness changes; not release acceptance or full CI.' > "$evidence/purpose.txt"
       - name: Run the existing signature and isolated lifecycle checks
         env:
           CI_ISOLATED_RUNNER: ${{ runner.environment }}
