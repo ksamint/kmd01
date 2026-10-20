@@ -33,6 +33,10 @@ Crashes and hangs:
 - Archive listing drains stdout and stderr concurrently, with bounded output and a timeout.
 
 Data loss:
+- Document reads now finish decoding before returning to AppKit, preventing an
+  immediate Save All from serializing empty or stale text. The actual-method
+  regression passes for delayed decoding and >200 KB content; full lifecycle
+  acceptance and production installation remain pending in `STABILITY_2.5.6.md`.
 - Vault CBOR encoder uses a growable buffer (was `push(...bytes)`, stack
   overflow near 128 KB).
 - Web app: one editor and undo history per note; programmatic `setText` is

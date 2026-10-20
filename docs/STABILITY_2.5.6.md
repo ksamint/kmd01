@@ -22,7 +22,7 @@ approval**. Do not create a positive acceptance JSON from this document.
 | Area | Source implemented | Evidence / remaining check |
 | --- | --- | --- |
 | Installed fixes + PR #14 | Integrated | Local tests below; full Xcode CI pending |
-| AppKit read/write isolation | Concurrent read/write disabled; Save As refresh and awaited autosave failures | Actual crash stacks traced; standalone override typecheck; full lifecycle matrix pending |
+| AppKit read/write isolation | Concurrent read/write disabled; synchronous read completion; Save As refresh and awaited autosave failures | Actual crash stacks traced; immediate Save All regression; full lifecycle matrix pending |
 | Agent/MCP/process pipes | Concurrent stdout/stderr drains, bounded cleanup/cancel/disconnect | Actual Swift transport/process harness; complete app CI pending |
 | Web sync | Read-only interval, common write guard, fresh stored snapshot, network deadline, late-result rejection | Automated failure/concurrency tests; live cloud/manual browser pending |
 | Manifest cleanup | Orphans only removed after manifest save | Notes and attachments failure regression tests |
@@ -77,6 +77,27 @@ Local completed checks (record only actual completed results):
   offer an explicit folder selection. Capture sharing reports an unavailable
   existing container result without inferring its cause or changing fallback
   storage. Local injected-error/queue/tree checks passed; full App CI is pending.
+- Hosted run `39419061409`: all Linux checks passed. Both macOS 15 and 26
+  Universal builds, MarkEditKit, MarkEditCore and Modules passed (120 Modules
+  tests, the same two material-view skips on each OS). Both lifecycle runners
+  stopped at nonprompting Automation preflight with OSStatus `-1744`, before
+  editing the fixture. This identifies the earlier save timeout as missing
+  runner Automation consent, not a demonstrated application save deadlock.
+  The harness now uses existing System Events/Accessibility grants only after
+  checking them, and requires the exact process, fixture window and complete
+  editable text. No TCC changes or permission-dialog clicks are made; hosted
+  accessibility behavior still requires a new run.
+- Final source review found that asynchronous decoding could return an empty
+  document to AppKit before Save All. Reading now finishes decoding and
+  publishing state before returning. A harness compiling the actual read,
+  serialization and Save All method bodies fails against the prior code and
+  passes with the fix, including replacement reads, empty files and >200 KB
+  Unicode content. Decoding can occupy the main thread; performance work is
+  deferred. The changed source requires another full hosted build.
+- Signing now preserves exact signed bytes before contacting Apple and retains
+  each returned submission response even if the second submission fails.
+  Four signing regressions, including partial submission failure and draft-only
+  success, pass locally. This is recovery preparation, not a signed release.
 
 ## Repository disclosure and settings
 
