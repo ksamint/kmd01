@@ -76,3 +76,25 @@ describe('PendingFileSave', () => {
     expect(barrierFinished).toBe(true);
   });
 });
+
+describe('PendingFileSave across files', () => {
+  it('flushes a pending edit for another file instead of discarding it', async () => {
+    const writes: Array<[string, string]> = [];
+    const coordinator = new PendingFileSave(
+      async (fileId, content) => {
+        writes.push([fileId, content]);
+        return content;
+      },
+      () => undefined,
+      () => undefined,
+      () => undefined,
+      60_000,
+    );
+
+    coordinator.queue('a', 'text of a');
+    coordinator.queue('b', 'text of b');
+    await coordinator.flush();
+
+    expect(writes).toEqual([['a', 'text of a'], ['b', 'text of b']]);
+  });
+});

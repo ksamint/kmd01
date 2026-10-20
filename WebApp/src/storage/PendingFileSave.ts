@@ -18,6 +18,10 @@ export class PendingFileSave<T> {
   ) {}
 
   queue(fileId: string, content: string) {
+    if (this.pending && this.pending.fileId !== fileId) {
+      // Replacing the pending edit would silently discard the other file's text.
+      void this.flush().catch(this.onBackgroundError);
+    }
     this.pending = { fileId, content };
     this.onSavingChange(true);
     if (this.timer) clearTimeout(this.timer);

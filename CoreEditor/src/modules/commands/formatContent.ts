@@ -1,5 +1,4 @@
 import { ChangeSpec } from '@codemirror/state';
-import { getEditorText } from '../../core';
 
 /**
  * Format the content, usually gets called when saving files.
@@ -16,50 +15,55 @@ export default function formatContent(
   const editor = window.editor;
   const state = editor.state;
 
-  const apply = (changes: ChangeSpec) => {
-    editor.dispatch({
-      changes,
-      userEvent: '@none', // Ignore automatic scrolling
-    });
-  };
-
-  if (insertFinalNewline) {
-    // We don't need to ensure final newline when it's empty
-    const text = getEditorText();
-    if (text.length > 0 && !text.endsWith(state.lineBreak)) {
-      apply({
-        insert: state.lineBreak,
-        from: state.doc.length,
-      });
-    }
-  }
+  // All edits are expressed against the current document and dispatched as a
+  // single transaction. Dispatching once per line used to trigger a full view
+  // update (decorations, native notifications, preview) per trailing-space
+  // line, which froze saving for documents with thousands of them.
+  const changes: ChangeSpec[] = [];
 
   // Whether formatting operations are all taken
   let isCompleted = true;
 
   if (trimTrailingWhitespace) {
-    // We need to update reversely to avoid index shift
-    for (let index = state.doc.lines; index >= 1; --index) {
+    const ranges = state.selection.ranges;
+    for (let index = 1; index <= state.doc.lines; ++index) {
       const line = state.doc.line(index);
-      const ranges = state.selection.ranges;
       const match = /\s+$/g.exec(line.text);
-
-      // For implicit formatting, avoid trimming spaces before the caret
-      if (!userInitiated && ranges.some(({ from, to }) => from === to && line.to === to)) {
-        if (isCompleted && match !== null) {
-          isCompleted = false;
-        }
+      if (match === null) {
         continue;
       }
 
-      if (match !== null) {
-        apply({
-          insert: '',
-          from: match.index + line.from,
-          to: line.to,
-        });
+      // For implicit formatting, avoid trimming spaces before the caret
+      if (!userInitiated && ranges.some(({ from, to }) => from === to && line.to === to)) {
+        isCompleted = false;
+        continue;
       }
+
+      changes.push({
+        insert: '',
+        from: match.index + line.from,
+        to: line.to,
+      });
     }
+  }
+
+  if (insertFinalNewline) {
+    // We don't need to ensure final newline when it's empty.
+    // The document ends with a line break exactly when its last line is empty.
+    const doc = state.doc;
+    if (doc.length > 0 && doc.line(doc.lines).length > 0) {
+      changes.push({
+        insert: state.lineBreak,
+        from: doc.length,
+      });
+    }
+  }
+
+  if (changes.length > 0) {
+    editor.dispatch({
+      changes,
+      userEvent: '@none', // Ignore automatic scrolling
+    });
   }
 
   return isCompleted;

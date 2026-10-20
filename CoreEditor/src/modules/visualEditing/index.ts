@@ -23,6 +23,12 @@ type SourceRange = {
 
 const refreshEffect = StateEffect.define();
 let pendingMode: boolean | undefined;
+let lastActiveRanges: SourceRange[] = [];
+
+function sameRanges(lhs: SourceRange[], rhs: SourceRange[]) {
+  return lhs.length === rhs.length
+    && lhs.every((range, index) => range.from === rhs[index].from && range.to === rhs[index].to);
+}
 
 export const visualEditingExtension = [
   StateField.define<DecorationSet>({
@@ -36,12 +42,19 @@ export const visualEditingExtension = [
           : decorations;
       }
 
-      if (
-        transaction.docChanged
-        || transaction.selection !== undefined
-        || transaction.effects.length > 0
-      ) {
+      if (transaction.docChanged || transaction.effects.length > 0) {
         return buildDecorations(transaction.state);
+      }
+
+      // A selection change only matters when it moves the caret into or out
+      // of a block; rebuilding from the whole syntax tree on every arrow key
+      // cost tens of milliseconds in large documents.
+      if (transaction.selection !== undefined) {
+        const activeRanges = getActiveRanges(transaction.state);
+        if (sameRanges(activeRanges, lastActiveRanges)) {
+          return decorations;
+        }
+        return buildDecorations(transaction.state, activeRanges);
       }
       return decorations;
     },
@@ -146,8 +159,11 @@ function applyMode(enabled: boolean) {
   });
 }
 
-function buildDecorations(state: EditorState): DecorationSet {
-  const activeRanges = getActiveRanges(state);
+function buildDecorations(
+  state: EditorState,
+  activeRanges: SourceRange[] = getActiveRanges(state),
+): DecorationSet {
+  lastActiveRanges = activeRanges;
   const ranges: Range<Decoration>[] = [];
   const visited = new Set<string>();
 

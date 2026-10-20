@@ -28,6 +28,7 @@ export const tocKeymap: KeyBinding[] = [
 
 let cachedWordDocument: Text | undefined;
 let cachedWordPositions: number[] = [];
+let lineWordOffsetCache = new Map<string, number[]>();
 
 export function getTableOfContents() {
   const editor = window.editor;
@@ -127,15 +128,34 @@ function getWordPositions(document: Text) {
     return cachedWordPositions;
   }
 
-  cachedWordDocument = document;
-  cachedWordPositions = [];
+  // Word boundaries never cross a line break, so segmenting per line gives
+  // the same positions as segmenting the whole text. Lines whose text is
+  // unchanged reuse their offsets instead of being re-segmented after every
+  // edit, which kept the outline update proportional to what changed.
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+  const positions: number[] = [];
+  const nextLineCache = new Map<string, number[]>();
 
-  for (const segment of segmenter.segment(document.toString())) {
-    if (segment.isWordLike === true) {
-      cachedWordPositions.push(segment.index);
+  for (let number = 1; number <= document.lines; ++number) {
+    const line = document.line(number);
+    let offsets = lineWordOffsetCache.get(line.text) ?? nextLineCache.get(line.text);
+    if (offsets === undefined) {
+      offsets = [];
+      for (const segment of segmenter.segment(line.text)) {
+        if (segment.isWordLike === true) {
+          offsets.push(segment.index);
+        }
+      }
+    }
+    nextLineCache.set(line.text, offsets);
+    for (const offset of offsets) {
+      positions.push(line.from + offset);
     }
   }
+
+  lineWordOffsetCache = nextLineCache;
+  cachedWordDocument = document;
+  cachedWordPositions = positions;
   return cachedWordPositions;
 }
 
