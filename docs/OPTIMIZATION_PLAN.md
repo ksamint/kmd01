@@ -24,6 +24,11 @@ need a runtime measurement first.
 ## 1. Integrated source baseline (not proof of installation)
 
 Crashes and hangs:
+- Release remains blocked by a reproduced macOS 15 hosted WebContent/Metal
+  cache lock hang during document restoration. Both Universal builds and
+  Swift suites pass; macOS 26's 30-cycle lifecycle test passes. See
+  `STABILITY_2.5.6.md` for exact artifacts and remaining diagnosis. No
+  production fix for this new hang or 2.5.6 installation is claimed.
 - SIGPIPE ignored at launch; `SO_NOSIGPIPE` on local MCP sockets.
 - `EditorDocument.canConcurrentlyReadDocuments` returns `false` (main-actor
   overrides trapped on AppKit's document-opening queue).

@@ -21,15 +21,15 @@ approval**. Do not create a positive acceptance JSON from this document.
 
 | Area | Source implemented | Evidence / remaining check |
 | --- | --- | --- |
-| Installed fixes + PR #14 | Integrated | Local tests below; full Xcode CI pending |
+| Installed fixes + PR #14 | Integrated | Both hosted Universal builds and Swift suites passed; lifecycle release blocker below |
 | AppKit read/write isolation | Concurrent read/write disabled; synchronous read completion; Save As refresh and awaited autosave failures | Actual crash stacks traced; immediate Save All regression; full lifecycle matrix pending |
-| Agent/MCP/process pipes | Concurrent stdout/stderr drains, bounded cleanup/cancel/disconnect | Actual Swift transport/process harness; complete app CI pending |
+| Agent/MCP/process pipes | Concurrent stdout/stderr drains, bounded cleanup/cancel/disconnect | Actual Swift transport/process harness and both hosted builds passed |
 | Web sync | Read-only interval, common write guard, fresh stored snapshot, network deadline, late-result rejection | Automated failure/concurrency tests; live cloud/manual browser pending |
 | Manifest cleanup | Orphans only removed after manifest save | Notes and attachments failure regression tests |
 | Failed editor saves | Retain per-file edits until successfully written | Cross-file failure + newer-edit regressions |
 | Persistent access | Per-process bookmarks, scope balancing, stale refresh/revocation generations, recoverable error statuses and explicit retry | Injected-operation/error tests and Swift typechecks; real signed/reboot matrix pending |
 | Final signing verifier | Exact source SHA, all component identity/version/SHA, entitlements/profile grants/expiry, hardened runtime, all Mach-O architectures | Synthetic positive/negative profile tests; real new candidate pending |
-| CI/release gates | Hosted Linux, automatic Mac matrix, fail-closed aggregate, protected-main signing, exact-asset acceptance | Local actionlint/shellcheck/unit tests; remote matrix pending |
+| CI/release gates | Hosted Linux, automatic Mac matrix, fail-closed aggregate, protected-main signing, exact-asset acceptance | Gates correctly block release on macOS 15 lifecycle failure; cross-version runtime pending |
 
 Local completed checks (record only actual completed results):
 
@@ -122,6 +122,27 @@ Local completed checks (record only actual completed results):
   delayed accessibility exposure is not established. Initial open now uses the
   same bounded, read-only full-source readiness check as restoration instead of
   a fixed four-second sleep. Save operations remain one-shot; full CI is pending.
+- Hosted run `39427206517` passed all Linux checks, both Universal builds and
+  all Swift suites. macOS 26 passed all 30 lifecycle cycles. macOS 15 passed
+  20 cycles, then failed to restore a usable editor on cycle 21. Consequently
+  `Release readiness` failed and cross-version runtime jobs did not run.
+- Diagnostics `39431640349` and `39433412675`, reusing the unchanged macOS 15
+  artifact, reproduced a genuine blank editor after 26 and 14 successful
+  cycles respectively. Both sampled the owned WebContent main thread waiting
+  for Core Animation's rendering queue, which was blocked in Metal's
+  `MTLCompilerFSCache::openSync` → `open_data_file` → `flock`. The second run
+  captured the exact fixture window and cache file descriptors: another,
+  visible Untitled window's renderer had the same `libraries.data` inode open
+  and an idle main thread. File-descriptor evidence does **not** identify the
+  conflicting lock owner. Hidden-process suspension is not established as
+  the cause. These runs used macOS 15.7.9 with Apple's virtual GPU driver;
+  applicability to physical Macs remains unverified.
+  Original artifact: commit `d783bce28677d2d044925e382c17cd0cc5807799`,
+  ZIP SHA256 `54ab8dbf8e4c98d47ef603ef87dae8940540ca48293341582bac77e0edd95910`.
+  Diagnostic cycle limits were 90; normal acceptance remains 30. No timeout
+  was extended, save retried, cache deleted or production app replaced.
+  A controlled WebKit configuration comparison is pending; this blocker has
+  no accepted production fix yet.
 
 ## Repository disclosure and settings
 
