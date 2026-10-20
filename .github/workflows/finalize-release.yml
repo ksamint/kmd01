@@ -187,8 +187,8 @@ jobs:
               --draft=false --latest --verify-tag
 
             sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
-            tap="$(brew --repository)/Library/Taps/fengurt/homebrew-ksamint"
-            cask="fengurt/ksamint/kmd"
+            tap="$(brew --repository)/Library/Taps/ksamint/homebrew-ksamint"
+            cask="ksamint/ksamint/kmd"
             mkdir -p "$HOME/.ssh"
             chmod 700 "$HOME/.ssh"
             if [[ "$HOMEBREW_TAP_DEPLOY_KEY" == *"BEGIN OPENSSH PRIVATE KEY"* ]]; then
@@ -203,9 +203,9 @@ jobs:
             ssh-keyscan github.com >> "$HOME/.ssh/known_hosts"
             export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ksamint_tap -o IdentitiesOnly=yes"
             if [ -d "$tap" ]; then
-              brew untap --force fengurt/ksamint
+              brew untap --force ksamint/ksamint
             fi
-            git clone git@github.com:fengurt/homebrew-ksamint.git "$tap"
+            git clone git@github.com:ksamint/homebrew-ksamint.git "$tap"
             mkdir -p "$tap/Casks"
             ruby Scripts/render-cask.rb "$version" "$sha" > "$tap/Casks/kmd.rb"
             rm -f "$tap/Casks/ksamint-markedit.rb"
