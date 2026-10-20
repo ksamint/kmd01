@@ -284,6 +284,7 @@ assert.equal(run(['diagnostic-window-ids', appPath, '103']), '');
 $.CGPreflightScreenCaptureAccess = () => true;
 $.kCGWindowListOptionOnScreenOnly = '1';
 ObjC.deepUnwrap = value => value;
+ObjC.castRefToObject = value => value;
 $.CGWindowListCopyWindowInfo = (option, relativeWindow) => {
   assert.equal(option, '1');
   assert.equal(relativeWindow, 0);
@@ -293,3 +294,12 @@ assert.equal(run(['diagnostic-window-ids', appPath, '103']), '42');
 $.NSProcessInfo.processInfo.environment.objectForKey = () => undefined;
 assert.throws(() => run(['diagnostic-window-ids', appPath, '103']), /isolated hosted runner/);
 console.log('Window diagnostics are nonprompting, hosted-only and limited to exact-PID visible application windows.');
+const diagnosticShell = require('node:fs').readFileSync(`${__dirname}/test-document-open-smoke.sh`, 'utf8');
+const cacheFilter = diagnosticShell.match(/awk '([^']+)'/)[1];
+const cachePaths = ['/private/var/folders/a/C/com.apple.metal/cache.data',
+  '/var/folders/a/C/com.apple.metal/cache.data', '/Users/runner/Library/Caches/cache.data'];
+const excludedPaths = ['/System/Library/Frameworks/Metal.framework/Metal', '/Users/runner/Documents/private.md'];
+assert.equal(require('node:child_process').execFileSync('awk', [cacheFilter], {
+  input: [...cachePaths, ...excludedPaths].join('\n') + '\n', encoding: 'utf8',
+}), cachePaths.join('\n') + '\n');
+console.log('Renderer lock diagnostics restrict discovered holder queries to temporary/cache paths.');

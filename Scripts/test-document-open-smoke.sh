@@ -80,6 +80,17 @@ capture_failure() {
   diagnostic_command /usr/bin/log show --last 2m --style compact --info \
     --predicate "processIdentifier == ${app_pid:-0} AND processImagePath == '$executable'" \
     > "$temporary/automation.log" 2>&1
+  # Record current peer state and open-file lock metadata without changing caches.
+  sed -n 's/.*\[PID=\([0-9][0-9]*\)\] WebProcessProxy::.*/\1/p' \
+    "$temporary/automation.log" | sort -u | head -8 | while IFS= read -r peer_pid; do
+      peer_command=$(ps -p "$peer_pid" -o comm= 2>/dev/null || true)
+      case "$peer_command" in
+        */com.apple.WebKit.WebContent)
+          ps -p "$peer_pid" -o pid,ppid,stat,wchan,etime,comm >> "$temporary/webcontent-processes.log" || true
+          diagnostic_command /usr/sbin/lsof -nP -a -p "$peer_pid" -d 0-999 -F pcfaltDin \
+            > "$temporary/webcontent-$peer_pid-files.log" 2>&1 ;;
+      esac
+    done
   # Only sample renderer PIDs reported unresponsive by this exact app process.
   sed -n 's/.*\[PID=\([0-9][0-9]*\)\] WebProcessProxy::didBecomeUnresponsive:.*/\1/p' \
     "$temporary/automation.log" | sort -u | head -4 | while IFS= read -r renderer_pid; do
@@ -91,7 +102,31 @@ capture_failure() {
             -file "$temporary/webcontent-$renderer_pid.log" \
             >"$temporary/webcontent-$renderer_pid-command.log" 2>&1 ;;
       esac
+      # Find holders of the exact cache files opened by the blocked renderer.
+      if [ -f "$temporary/webcontent-$renderer_pid-files.log" ]; then
+        sed -n 's/^n//p' "$temporary/webcontent-$renderer_pid-files.log" | \
+          awk 'index($0, "/private/var/folders/") == 1 || index($0, "/var/folders/") == 1 || (index($0, "/Users/") == 1 && index($0, "/Library/Caches/") > 1)' | \
+          sort -u | head -8 | while IFS= read -r cache_file; do
+            [ -f "$cache_file" ] || continue
+            echo "Renderer cache file: $cache_file" >> "$temporary/webcontent-cache-holders.log"
+            diagnostic_command /usr/sbin/lsof -nP -F pcfaltDin "$cache_file" \
+              >> "$temporary/webcontent-cache-holders.log" 2>&1
+          done
+      fi
     done
+  if [ -f "$temporary/webcontent-cache-holders.log" ]; then
+    sed -n 's/^p\([0-9][0-9]*\)$/\1/p' "$temporary/webcontent-cache-holders.log" | \
+      sort -u | head -8 | while IFS= read -r holder_pid; do
+        holder_command=$(ps -p "$holder_pid" -o comm= 2>/dev/null || true)
+        ps -p "$holder_pid" -o pid,ppid,stat,wchan,etime,comm >> "$temporary/webcontent-processes.log" || true
+        case "$holder_command" in
+          */com.apple.WebKit.WebContent|*/com.apple.WebKit.GPU|*/MTLCompilerService)
+            [ ! -f "$temporary/webcontent-$holder_pid.log" ] || continue
+            diagnostic_command sample "$holder_pid" 2 10 -file "$temporary/webcontent-$holder_pid.log" \
+              > "$temporary/webcontent-$holder_pid-command.log" 2>&1 ;;
+        esac
+      done
+  fi
   for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" \
     "$temporary/automation.log" "$temporary"/webcontent-*.log; do
     [ -f "$diagnostic" ] || continue

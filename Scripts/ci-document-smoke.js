@@ -242,9 +242,9 @@ function run(argv) {
     ObjC.import('CoreGraphics');
     ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
     if (!$.CGPreflightScreenCaptureAccess()) return '';
-    return diagnosticWindowIDs(ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(
+    return diagnosticWindowIDs(ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
       $.kCGWindowListOptionOnScreenOnly, 0, // kCGNullWindowID is a C macro, absent from JXA.
-    )), Number(expectedPID));
+    ))), Number(expectedPID));
   }
   const trace = typeof module === 'undefined' ? value => console.log(`[smoke] ${value}`) : () => {};
   if (mode === 'save' || mode === 'restored') {
