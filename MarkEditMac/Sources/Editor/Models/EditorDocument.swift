@@ -341,6 +341,8 @@ extension EditorDocument {
   }
 
   override func close() {
+    autosaveDelayedTask?.cancel()
+    autosaveDelayedTask = nil
     saveToClosedTabHistory()
     super.close()
 
@@ -440,6 +442,12 @@ extension EditorDocument {
     saveContent(sender: sender, userInitiated: true)
   }
 
+  override func saveAs(_ sender: Any?) {
+    updateContent {
+      super.saveAs(sender)
+    }
+  }
+
   override func autosave(withImplicitCancellability implicitlyCancellable: Bool) async throws {
     if isOutdated {
       await updateContent()
@@ -450,17 +458,11 @@ extension EditorDocument {
     //
     // To work around this, check a flag to save the document manually.
     if !hasBeenReverted && isTerminating && hasUnautosavedChanges, let fileURL, let fileType {
-      try? writeSafely(to: fileURL, ofType: fileType, for: .autosaveAsOperation)
+      try writeSafely(to: fileURL, ofType: fileType, for: .autosaveAsOperation)
       fileModificationDate = .now // Prevent immediate presentedItemDidChange calls
     }
 
-    Task { @MainActor in
-      do {
-        try await super.autosave(withImplicitCancellability: implicitlyCancellable)
-      } catch {
-        Logger.log(.error, "Failed to autosave: \(error)")
-      }
-    }
+    try await super.autosave(withImplicitCancellability: implicitlyCancellable)
   }
 
   override func data(ofType typeName: String) throws -> Data {
