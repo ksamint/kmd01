@@ -31,6 +31,52 @@ fixture="$temporary/document-open-smoke.md"
 touch "$fixture"
 app_pid=""
 
+# Diagnostics have their own short bounds and never inspect another app's
+# documents or change privacy settings. Only disposable hosted fixtures exist.
+diagnostic_command() {
+  "$@" &
+  diagnostic_pid=$!
+  diagnostic_attempt=0
+  while kill -0 "$diagnostic_pid" >/dev/null 2>&1 && [ "$diagnostic_attempt" -lt 20 ]; do
+    diagnostic_attempt=$((diagnostic_attempt + 1))
+    sleep 0.25
+  done
+  if kill -0 "$diagnostic_pid" >/dev/null 2>&1; then
+    kill -TERM "$diagnostic_pid" >/dev/null 2>&1 || true
+    sleep 0.25
+    kill -KILL "$diagnostic_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$diagnostic_pid" 2>/dev/null || true
+}
+
+capture_failure() {
+  [ ! -f "$temporary/diagnostics-captured" ] || return 0
+  touch "$temporary/diagnostics-captured"
+  echo "Smoke failure stage=$1 app_pid=${app_pid:-none} osascript_pid=$2" >&2
+  if [ -f "$fixture" ]; then
+    stat -f 'Dedicated fixture bytes=%z mode=%Lp' "$fixture" >&2
+    shasum -a 256 "$fixture" >&2
+  fi
+  if [ -n "$app_pid" ]; then
+    ps -p "$app_pid,$2" -o pid,ppid,stat,etime,comm >&2 || true
+    diagnostic_command osascript -l JavaScript "$smoke_script" pid "$app" > "$temporary/diagnostic-pid.log" 2>&1
+    if [ "$(cat "$temporary/diagnostic-pid.log")" = "$app_pid" ]; then
+      diagnostic_command sample "$app_pid" 2 10 -file "$temporary/app-sample.log" >/dev/null 2>&1
+    fi
+  fi
+  if kill -0 "$2" >/dev/null 2>&1; then
+    diagnostic_command sample "$2" 2 10 -file "$temporary/osascript-sample.log" >/dev/null 2>&1
+  fi
+  diagnostic_command /usr/bin/log show --last 2m --style compact --info \
+    --predicate "processImagePath == '$executable' OR (process == 'tccd' AND eventMessage CONTAINS 'art.apuch.ksamint.markedit')" \
+    > "$temporary/automation.log" 2>&1
+  for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"; do
+    [ -f "$diagnostic" ] || continue
+    echo "Diagnostic: $(basename "$diagnostic")" >&2
+    cat "$diagnostic" >&2
+  done
+}
+
 # Bound every automation request, including identity queries and graceful quit.
 # Only this invocation's osascript child is terminated on timeout, never the app.
 jxa() {
@@ -42,12 +88,19 @@ jxa() {
     sleep 0.25
   done
   if kill -0 "$script_pid" >/dev/null 2>&1; then
+    capture_failure "$1-timeout" "$script_pid"
     kill -TERM "$script_pid" >/dev/null 2>&1 || true
+    sleep 0.25
+    kill -KILL "$script_pid" >/dev/null 2>&1 || true
     wait "$script_pid" 2>/dev/null || true
     echo "Timed out during $1; check application responsiveness and Automation permission" >&2
     return 1
   fi
-  wait "$script_pid"
+  if wait "$script_pid"; then return 0; fi
+  # Restoration may legitimately need to wait for its window; diagnose only
+  # after that existing bounded retry expires.
+  if [ "$1" != restored ]; then capture_failure "$1-error" "$script_pid"; fi
+  return 1
 }
 
 wait_for_exit() {
@@ -80,6 +133,8 @@ cleanup() {
     fi
   fi
   rm -f "$fixture" "$temporary/saved.md" "$temporary/restoration-error.log"
+  rm -f "$temporary/diagnostics-captured" "$temporary/diagnostic-pid.log" \
+    "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"
   rmdir "$temporary" 2>/dev/null || true
   exit "$result"
 }
@@ -132,6 +187,7 @@ verify_restoration() {
     check_crashes || return 1
     if [ "$(date +%s)" -ge "$restore_deadline" ]; then
       cat "$temporary/restoration-error.log" >&2
+      capture_failure restoration-timeout "$script_pid"
       echo "Timed out waiting for the exact saved fixture to restore" >&2
       return 1
     fi

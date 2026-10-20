@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { exactDocument, verifyRestoredDocument, isProductionBundle, run } = require('./ci-document-smoke.js');
+const { exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission, isProductionBundle, run } = require('./ci-document-smoke.js');
 const fixture = { file: () => '/isolated/fixture.md' };
 const unrelated = { file: () => '/real-user/notes.md' };
 const untitled = { file: () => null };
@@ -28,12 +28,21 @@ const process = pid => ({
   get terminate() { stopped.push(pid); return true; },
 });
 const processes = [process(101), process(102)];
-global.ObjC = { import() {}, unwrap: value => value };
+global.ObjC = { import() {}, unwrap: value => value, bindFunction() {} };
 global.$ = value => ({ stringByResolvingSymlinksInPath: value });
 $.NSWorkspace = { sharedWorkspace: { runningApplications: {
   count: processes.length, objectAtIndex: index => processes[index],
 } } };
 $.NSRunningApplication = { runningApplicationWithProcessIdentifier: pid => processes.find(item => item.processIdentifier === pid) };
+$.NSAppleEventDescriptor = { descriptorWithProcessIdentifier: pid => ({ aeDesc: { pid } }) };
+let automationStatus = 0;
+$.AEDeterminePermissionToAutomateTarget = (target, eventClass, eventID, askUser) => {
+  assert.equal(target.pid, 103);
+  assert.equal(eventClass, 0x2a2a2a2a);
+  assert.equal(eventID, 0x2a2a2a2a);
+  assert.equal(askUser, false);
+  return automationStatus;
+};
 assert.equal(run(['running-production']), [
   `101\t${extensionPath}\tart.apuch.ksamint.markedit.preview-extension`,
   `102\t${extensionPath}\tart.apuch.ksamint.markedit.preview-extension`,
@@ -111,3 +120,21 @@ assert.equal(editableFixture.source, '# Save smoke test');
 assert.throws(() => run(['save', appPath, '102', '/tmp/fixture.md', 'must not write']));
 assert.equal(editableFixture.source, '# Save smoke test');
 console.log('All 30 cycle payloads save only the exact fixture; default payload remains supported.');
+
+for (const denied of [-1743, -1744, -600]) {
+  automationStatus = denied;
+  const traces = [];
+  assert.throws(() => requireAutomationPermission(103, stage => traces.push(stage)), new RegExp(String(denied)));
+  assert.deepEqual(traces, ['automation:preflight', `automation:status=${denied}`]);
+  global.Application = () => { throw new Error('must not connect without automation permission'); };
+  assert.throws(() => run(['save', appPath, '103', '/tmp/fixture.md', 'must not write']), new RegExp(String(denied)));
+  assert.equal(editableFixture.source, '# Save smoke test');
+}
+automationStatus = 0;
+const stages = [];
+saveExactDocument({
+  documents: () => [editableFixture],
+  save(document) { assert.equal(document, editableFixture); },
+}, '/tmp/fixture.md', normalize, 'diagnostic fixture', stage => stages.push(stage));
+assert.deepEqual(stages, ['documents:query', 'fixture:select', 'source:set', 'document:save', 'document:saved']);
+console.log('Nonprompting automation preflight fails closed and save diagnostics identify each event stage.');
