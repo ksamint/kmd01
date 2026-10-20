@@ -113,6 +113,15 @@ Local completed checks (record only actual completed results):
   `af0752e7d06a19e3b46fbc9de791e0153fcce5b523b70237d99e156032a57510`.
   This diagnostic is not final CI or signed-artifact acceptance. The integrated
   harness still requires the complete macOS 26/15 and cross-version matrix.
+- Diagnostic `39425241208` also passed 30 cycles on macOS 26 with unchanged
+  artifact bytes and no main/helper crash reports. Full run `39425031727`
+  passed the complete macOS 15 job and both builds/Swift suites. Its macOS 26
+  lifecycle check stopped before the first edit: the exact window exposed only
+  the native wrapper, without the writable WebKit accessibility subtree.
+  WebKit reported load completion and the main thread was idle; the cause of
+  delayed accessibility exposure is not established. Initial open now uses the
+  same bounded, read-only full-source readiness check as restoration instead of
+  a fixed four-second sleep. Save operations remain one-shot; full CI is pending.
 
 ## Repository disclosure and settings
 

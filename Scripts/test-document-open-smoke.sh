@@ -209,7 +209,10 @@ launch
 # violated EditorDocument's actor isolation. Writing also exercises its save path.
 sleep 1
 jxa open "$app" "$app_pid" "$fixture"
-sleep 4
+# Initial WebKit accessibility loading is asynchronous, just like restoration.
+# Verify the original text before issuing any edit; never retry a partial save.
+cp "$fixture" "$temporary/saved.md"
+verify_restoration
 # Each launch after this point must use AppKit's saved window/document state.
 # No open event is sent, so a normal-open success cannot hide a restore failure.
 iteration=1
