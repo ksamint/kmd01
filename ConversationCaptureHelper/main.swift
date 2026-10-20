@@ -147,9 +147,15 @@ private final class ClipboardCaptureService: NSObject {
   private func captureEnvelope(_ pasteboard: NSPasteboard) -> CaptureEnvelopeV1? {
     let html = pasteboard.data(forType: .html)
     let rtf = pasteboard.data(forType: .rtf)
-    let attributed = html.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil).string }
-      ?? rtf.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil).string }
-    guard let text = attributed ?? pasteboard.string(forType: .string),
+    // The HTML importer loads a WebKit document on the main thread and takes
+    // tens to hundreds of milliseconds per copy; use the plain-text
+    // representation when the source provides one and import only otherwise.
+    let plain = pasteboard.string(forType: .string).flatMap { $0.isEmpty ? nil : $0 }
+    let attributed = plain != nil
+      ? nil
+      : html.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil).string }
+        ?? rtf.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil).string }
+    guard let text = plain ?? attributed,
           let bytes = text.data(using: .utf8), !bytes.isEmpty, bytes.count <= Self.maximumBytes else { return nil }
     let bookmarks = pasteboard.readObjects(forClasses: [NSURL.self], options: nil)?.compactMap { value -> Data? in
       guard let url = value as? URL else { return nil }

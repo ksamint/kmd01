@@ -61,16 +61,53 @@ final class ActivityHistoryStore {
   private let maximumEntries = 5_000
   private let retentionInterval: TimeInterval = 90 * 24 * 60 * 60
   private let coalescingInterval: TimeInterval = 5 * 60
+  private static let persistDelay: Duration = .seconds(1)
   private var pendingEdits = [String: Task<Void, Never>]()
+
+  // The activity list (up to 5,000 entries) used to be JSON-decoded from
+  // UserDefaults on every read and re-encoded on every write, on the main
+  // thread, for every open, save, and idle autosave. Keep it in memory and
+  // persist with a short debounce instead.
+  private var cachedEntries: [EditorHistory.Activity]?
+  private var persistTask: Task<Void, Never>?
 
   private init() {
     purge()
   }
 
+  private var currentEntries: [EditorHistory.Activity] {
+    if let cachedEntries {
+      return cachedEntries
+    }
+    let loaded = EditorHistory.activity
+    cachedEntries = loaded
+    return loaded
+  }
+
+  private func store(_ entries: [EditorHistory.Activity]) {
+    cachedEntries = entries
+    persistTask?.cancel()
+    persistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: Self.persistDelay)
+      guard let self, !Task.isCancelled else { return }
+      self.persistTask = nil
+      self.flush()
+    }
+  }
+
+  /// Writes any pending change to UserDefaults immediately.
+  func flush() {
+    persistTask?.cancel()
+    persistTask = nil
+    if let cachedEntries {
+      EditorHistory.activity = cachedEntries
+    }
+  }
+
   func record(_ kind: EditorHistory.Activity.Kind, url: URL) {
     let path = url.standardizedFileURL.path
     let now = Date.now
-    var entries = EditorHistory.activity.filter {
+    var entries = currentEntries.filter {
       now.timeIntervalSince($0.timestamp) <= retentionInterval
     }
 
@@ -93,7 +130,7 @@ final class ActivityHistoryStore {
       ), at: 0)
     }
 
-    EditorHistory.activity = Array(entries.prefix(maximumEntries))
+    store(Array(entries.prefix(maximumEntries)))
   }
 
   func scheduleEdit(url: URL?) {
@@ -110,30 +147,40 @@ final class ActivityHistoryStore {
 
   func entries(limit: Int = 200) -> [EditorHistory.Activity] {
     purge()
-    return Array(EditorHistory.activity.prefix(max(0, limit)))
+    return Array(currentEntries.prefix(max(0, limit)))
   }
 
   func recentDocuments(limit: Int = 20) -> [EditorHistory.Activity] {
+    // Stop as soon as enough existing documents are found instead of
+    // stat-ing every unique path in the whole history.
     var seen = Set<String>()
-    let documents = entries(limit: maximumEntries)
-      .filter { entry in
-        guard !seen.contains(entry.path) else { return false }
-        seen.insert(entry.path)
-        return FileManager.default.fileExists(atPath: entry.path)
+    var documents = [EditorHistory.Activity]()
+    for entry in entries(limit: maximumEntries) {
+      if documents.count >= limit {
+        break
       }
-    return Array(documents.prefix(limit))
+      guard seen.insert(entry.path).inserted,
+            FileManager.default.fileExists(atPath: entry.path) else {
+        continue
+      }
+      documents.append(entry)
+    }
+    return documents
   }
 
   func clear() {
     pendingEdits.values.forEach { $0.cancel() }
     pendingEdits.removeAll()
-    EditorHistory.activity = []
+    cachedEntries = []
+    flush()
   }
 
   func purge() {
     let cutoff = Date.now.addingTimeInterval(-retentionInterval)
-    EditorHistory.activity = Array(
-      EditorHistory.activity.filter { $0.timestamp >= cutoff }.prefix(maximumEntries)
-    )
+    let entries = currentEntries
+    let purged = Array(entries.filter { $0.timestamp >= cutoff }.prefix(maximumEntries))
+    if purged.count != entries.count {
+      store(purged)
+    }
   }
 }

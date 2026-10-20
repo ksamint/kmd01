@@ -15,6 +15,12 @@ import SharedUI
 @main
 final class Application: NSApplication {
   static func main() {
+    // The Agent panel and the MCP bridges write to Unix sockets and pipes whose
+    // peer (a CLI the user can cancel) may already be gone. Without this, the
+    // resulting EPIPE is delivered as SIGPIPE and terminates the whole app
+    // instead of surfacing as a write error.
+    signal(SIGPIPE, SIG_IGN)
+
     if let socketIndex = CommandLine.arguments.firstIndex(of: "--mcp-live-socket"),
        let capabilityIndex = CommandLine.arguments.firstIndex(of: "--mcp-capability-file"),
        CommandLine.arguments.indices.contains(socketIndex + 1),

@@ -755,7 +755,8 @@ private final class ClipboardHistoryCellView: NSTableCellView {
   ) {
     self.onEditTags = onEditTags
     self.onTogglePin = onTogglePin
-    let preview = item.content
+    // Only the visible prefix is needed; items can be megabytes long.
+    let preview = String(item.content.prefix(400))
       .replacingOccurrences(of: "\n", with: "  ")
       .replacingOccurrences(of: "\t", with: " ")
     contentLabel.stringValue = String(preview.prefix(180))
@@ -796,10 +797,14 @@ private final class ClipboardHistoryCellView: NSTableCellView {
     onTogglePin?()
   }
 
-  private func relativeDate(_ date: Date) -> String {
+  private static let relativeDateFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .short
-    return formatter.localizedString(for: date, relativeTo: Date())
+    return formatter
+  }()
+
+  private func relativeDate(_ date: Date) -> String {
+    Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date())
   }
 }
 

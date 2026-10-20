@@ -119,9 +119,20 @@ public actor WorkspaceIndex {
   private let rootURL: URL
   private let databaseURL: URL
 
+  /// One connection for the lifetime of the actor. Opening SQLite and replaying
+  /// the schema on every call used to dominate search and refresh latency.
+  private var connection: OpaquePointer?
+  private var isConfigured = false
+
   public init(rootURL: URL, databaseURL: URL? = nil) {
     self.rootURL = rootURL.standardizedFileURL
     self.databaseURL = databaseURL ?? Self.defaultDatabaseURL(rootURL: rootURL)
+  }
+
+  deinit {
+    if let connection {
+      sqlite3_close(connection)
+    }
   }
 
   @discardableResult
@@ -130,19 +141,44 @@ public actor WorkspaceIndex {
 
     do {
       let files = indexableFiles()
-      var insertedFileCount = 0
+      var indexedFileCount = 0
       try withDatabase { database in
         try configure(database)
         try execute(database, sql: "BEGIN IMMEDIATE")
-        try execute(database, sql: "DELETE FROM workspace_fts")
-        try execute(database, sql: "DELETE FROM files")
 
         do {
+          // Incremental: files whose modification date and size are unchanged
+          // keep their rows, so a rebuild of a large, mostly unchanged
+          // workspace costs a directory walk instead of re-reading, hashing,
+          // folding, and re-tokenizing every note.
+          let existingRecords = try existingFileRecords(database)
+          var seenPaths = Set<String>()
+          seenPaths.reserveCapacity(files.count)
+
           for url in files {
             guard !Task.isCancelled else {
               throw CancellationError()
             }
-            insertedFileCount += try insert(url, database: database) ? 1 : 0
+
+            let relativePath = url.relativePath(from: rootURL)
+            seenPaths.insert(relativePath)
+
+            if let record = existingRecords[relativePath] {
+              if let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                 let modifiedAt = values.contentModificationDate?.timeIntervalSince1970,
+                 let byteSize = values.fileSize,
+                 record.modifiedAt == modifiedAt,
+                 record.byteSize == Int64(byteSize) {
+                indexedFileCount += 1
+                continue
+              }
+              try remove(path: relativePath, database: database)
+            }
+            indexedFileCount += try insert(url, database: database) ? 1 : 0
+          }
+
+          for path in existingRecords.keys where !seenPaths.contains(path) {
+            try remove(path: path, database: database)
           }
           try execute(database, sql: "COMMIT")
         } catch {
@@ -151,8 +187,8 @@ public actor WorkspaceIndex {
         }
       }
 
-      state = .ready(fileCount: insertedFileCount)
-      return insertedFileCount
+      state = .ready(fileCount: indexedFileCount)
+      return indexedFileCount
     } catch {
       state = .failed
       throw error
@@ -303,26 +339,13 @@ public actor WorkspaceIndex {
         )
       }
 
-      return try files.map { path, modifiedAt, category in
-        let tags = try preparedRows(
-          database,
-          sql: """
-          SELECT t.display_name
-          FROM tags t
-          JOIN file_tags ft ON ft.tag_id = t.id
-          JOIN files f ON f.id = ft.file_id
-          WHERE f.path = ?
-          ORDER BY t.display_name COLLATE NOCASE
-          """,
-          values: [path]
-        ) {
-          Self.string($0, column: 0)
-        }
-        return WorkspaceFileSummary(
+      let tagsByPath = try tagsByPath(database, paths: files.map(\.0))
+      return files.map { path, modifiedAt, category in
+        WorkspaceFileSummary(
           path: path,
           modifiedAt: Date(timeIntervalSince1970: modifiedAt),
           category: category,
-          tags: tags
+          tags: tagsByPath[path] ?? []
         )
       }
     }) ?? []
@@ -376,7 +399,17 @@ private extension WorkspaceIndex {
     case prepare(String)
   }
 
+  static let schemaVersion: Int64 = 4
+
   func withDatabase<T>(_ operation: (OpaquePointer) throws -> T) throws -> T {
+    try operation(openDatabaseIfNeeded())
+  }
+
+  func openDatabaseIfNeeded() throws -> OpaquePointer {
+    if let connection {
+      return connection
+    }
+
     try FileManager.default.createDirectory(
       at: databaseURL.deletingLastPathComponent(),
       withIntermediateDirectories: true
@@ -394,15 +427,16 @@ private extension WorkspaceIndex {
       throw DatabaseError.open(message)
     }
 
-    defer {
-      sqlite3_close(database)
-    }
-
     sqlite3_busy_timeout(database, 2_000)
-    return try operation(database)
+    connection = database
+    return database
   }
 
   func configure(_ database: OpaquePointer) throws {
+    guard !isConfigured else {
+      return
+    }
+
     try execute(database, sql: "PRAGMA journal_mode=WAL")
     try execute(database, sql: "PRAGMA synchronous=NORMAL")
     try execute(database, sql: "PRAGMA foreign_keys=ON")
@@ -472,7 +506,59 @@ private extension WorkspaceIndex {
     try execute(database, sql: "CREATE INDEX IF NOT EXISTS files_category_idx ON files(category_key)")
     try execute(database, sql: "CREATE INDEX IF NOT EXISTS links_target_idx ON links(target_key)")
     try execute(database, sql: "CREATE INDEX IF NOT EXISTS file_tags_tag_idx ON file_tags(tag_id)")
-    try execute(database, sql: "PRAGMA user_version=3")
+
+    // Rows written by an older parser or schema are dropped once, so the next
+    // (incremental) rebuild re-indexes everything instead of trusting them.
+    let storedVersion = try scalarInt(database, sql: "PRAGMA user_version") ?? 0
+    if storedVersion != Self.schemaVersion {
+      try execute(database, sql: "DELETE FROM workspace_fts")
+      try execute(database, sql: "DELETE FROM files")
+      try execute(database, sql: "DELETE FROM tags")
+      try execute(database, sql: "PRAGMA user_version=\(Self.schemaVersion)")
+    }
+    isConfigured = true
+  }
+
+  struct ExistingFileRecord {
+    let modifiedAt: Double
+    let byteSize: Int64
+  }
+
+  func existingFileRecords(_ database: OpaquePointer) throws -> [String: ExistingFileRecord] {
+    var records = [String: ExistingFileRecord]()
+    _ = try rows(database, sql: "SELECT path, modified_at, byte_size FROM files") { statement in
+      records[Self.string(statement, column: 0)] = ExistingFileRecord(
+        modifiedAt: sqlite3_column_double(statement, 1),
+        byteSize: sqlite3_column_int64(statement, 2)
+      )
+    }
+    return records
+  }
+
+  /// Tags for many files in one query instead of one query per file.
+  func tagsByPath(_ database: OpaquePointer, paths: [String]) throws -> [String: [String]] {
+    guard !paths.isEmpty else {
+      return [:]
+    }
+
+    let allowedPaths = Set(paths)
+    var tagsByPath = [String: [String]]()
+    _ = try rows(
+      database,
+      sql: """
+      SELECT f.path, t.display_name
+      FROM file_tags ft
+      JOIN files f ON f.id = ft.file_id
+      JOIN tags t ON t.id = ft.tag_id
+      ORDER BY t.display_name COLLATE NOCASE
+      """
+    ) { statement in
+      let path = Self.string(statement, column: 0)
+      if allowedPaths.contains(path) {
+        tagsByPath[path, default: []].append(Self.string(statement, column: 1))
+      }
+    }
+    return tagsByPath
   }
 
   func execute(_ database: OpaquePointer, sql: String) throws {
@@ -498,6 +584,7 @@ private extension WorkspaceIndex {
     let modifiedAt = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
     let byteSize = values?.fileSize ?? contents.data.count
     let hash = SHA256.hash(data: contents.data).map { String(format: "%02x", $0) }.joined()
+    let folded = Self.fold("\(relativePath)\n\(body)")
     let sql = """
     INSERT INTO files(
       path, name, body, folded, category, category_key, modified_at, byte_size, content_hash
@@ -511,7 +598,7 @@ private extension WorkspaceIndex {
         .text(relativePath),
         .text(url.lastPathComponent),
         .text(body),
-        .text(Self.fold("\(relativePath)\n\(body)")),
+        .text(folded),
         metadata.category.map(BoundValue.text) ?? .null,
         metadata.category.map { .text(Self.fold($0)) } ?? .null,
         .double(modifiedAt),
@@ -533,7 +620,7 @@ private extension WorkspaceIndex {
         .text(relativePath),
         .text(url.lastPathComponent),
         .text(body),
-        .text(Self.fold("\(relativePath)\n\(body)")),
+        .text(folded),
       ]
     )
 
@@ -578,7 +665,10 @@ private extension WorkspaceIndex {
   }
 
   func remove(_ url: URL, database: OpaquePointer) throws {
-    let path = url.relativePath(from: rootURL)
+    try remove(path: url.relativePath(from: rootURL), database: database)
+  }
+
+  func remove(path: String, database: OpaquePointer) throws {
     try run(
       database,
       sql: "DELETE FROM workspace_fts WHERE rowid IN (SELECT id FROM files WHERE path = ?)",
@@ -1058,27 +1148,14 @@ private extension WorkspaceIndex {
     let targetMap = Self.targetMap(paths: Array(allowedPaths))
     var nodes = [WorkspaceGraphNode]()
 
+    let tagsByPath = try tagsByPath(database, paths: files.map(\.path))
     for file in files {
-      let tags = try preparedRows(
-        database,
-        sql: """
-        SELECT t.display_name
-        FROM tags t
-        JOIN file_tags ft ON ft.tag_id = t.id
-        JOIN files f ON f.id = ft.file_id
-        WHERE f.path = ?
-        ORDER BY t.display_name COLLATE NOCASE
-        """,
-        values: [file.path]
-      ) {
-        Self.string($0, column: 0)
-      }
       nodes.append(
         WorkspaceGraphNode(
           path: file.path,
           title: URL(fileURLWithPath: file.name).deletingPathExtension().lastPathComponent,
           category: file.category,
-          tags: tags
+          tags: tagsByPath[file.path] ?? []
         )
       )
     }
@@ -1132,12 +1209,19 @@ private extension WorkspaceIndex {
     let kind: WorkspaceLinkKind
   }
 
+  // Compiled once; NSRegularExpression is immutable and thread-safe.
+  nonisolated(unsafe) static let wikiLinkExpression = try? NSRegularExpression(
+    pattern: #"\[\[([^\]\|\n]+)(?:\|([^\]\n]+))?\]\]"#
+  )
+  nonisolated(unsafe) static let markdownLinkExpression = try? NSRegularExpression(
+    pattern: #"!?\[[^\]\n]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)"#
+  )
+
   static func links(in body: String, sourcePath: String) -> [ParsedLink] {
     let sourceDirectory = (sourcePath as NSString).deletingLastPathComponent
     var links = [ParsedLink]()
 
-    let wikiPattern = #"\[\[([^\]\|\n]+)(?:\|([^\]\n]+))?\]\]"#
-    if let expression = try? NSRegularExpression(pattern: wikiPattern) {
+    if let expression = wikiLinkExpression {
       let range = NSRange(body.startIndex..<body.endIndex, in: body)
       for match in expression.matches(in: body, range: range) {
         guard let targetRange = Range(match.range(at: 1), in: body) else {
@@ -1153,8 +1237,7 @@ private extension WorkspaceIndex {
       }
     }
 
-    let markdownPattern = #"!?\[[^\]\n]*\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)"#
-    if let expression = try? NSRegularExpression(pattern: markdownPattern) {
+    if let expression = markdownLinkExpression {
       let range = NSRange(body.startIndex..<body.endIndex, in: body)
       for match in expression.matches(in: body, range: range) {
         guard let targetRange = Range(match.range(at: 1), in: body) else {
@@ -1281,9 +1364,11 @@ private extension WorkspaceIndex {
       return false
     }
 
-    let type = UTType(filenameExtension: url.pathExtension)
-    return type?.conforms(to: .text) == true
-      || Self.textExtensions.contains(url.pathExtension.lowercased())
+    let pathExtension = url.pathExtension.lowercased()
+    if Self.textExtensions.contains(pathExtension) {
+      return true
+    }
+    return UTType(filenameExtension: pathExtension)?.conforms(to: .text) == true
   }
 
   func fileContents(_ url: URL) -> FileContents? {
@@ -1432,15 +1517,25 @@ private extension WorkspaceIndex {
   ) -> [(Int, String)] {
     let lines = body.components(separatedBy: .newlines)
     let foldedTerms = terms.map(fold)
-    var matchingLineIndices = foldedTerms.isEmpty
-      ? [lines.startIndex]
-      : lines.indices.filter { index in
-        foldedTerms.contains { fold(lines[index]).contains($0) }
-      }
+    let maximumCount = max(0, remainingCount)
+    var matchingLineIndices = [Int]()
 
-    if matchingLineIndices.isEmpty,
-       foldedTerms.contains(where: { fold(relativePath).contains($0) }) {
-      matchingLineIndices = [0]
+    if foldedTerms.isEmpty {
+      matchingLineIndices = [lines.startIndex]
+    } else {
+      for index in lines.indices where matchingLineIndices.count < maximumCount {
+        let foldedLine = fold(lines[index])
+        if foldedTerms.contains(where: { foldedLine.contains($0) }) {
+          matchingLineIndices.append(index)
+        }
+      }
+    }
+
+    if matchingLineIndices.isEmpty {
+      let foldedPath = fold(relativePath)
+      if foldedTerms.contains(where: { foldedPath.contains($0) }) {
+        matchingLineIndices = [0]
+      }
     }
     if matchingLineIndices.isEmpty {
       matchingLineIndices = [0]

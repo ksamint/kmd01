@@ -44,6 +44,12 @@ final class WorkspaceSidebarView: NSView {
 
   var session: WorkspaceSession? {
     didSet {
+      // Re-binding the same session (sidebar toggles, tab binding, opening a
+      // file from the tree) must not reload the tree or re-index the workspace.
+      guard session !== oldValue else {
+        return
+      }
+
       session?.onFileSystemChange = { [weak self] in
         self?.reloadTree()
         self?.reloadTaxonomy()
@@ -59,6 +65,7 @@ final class WorkspaceSidebarView: NSView {
     }
   }
 
+  private var fileIconCache = [String: NSImage]()
   private let modeControl = NSSegmentedControl()
   private let documentOutlineContainer = NSView()
   private let documentOutlineView = DocumentOutlineView()
@@ -944,9 +951,21 @@ extension WorkspaceSidebarView: NSOutlineViewDataSource, NSOutlineViewDelegate {
       ?? makeFileCell(identifier: identifier)
 
     cell.textField?.stringValue = node.url.lastPathComponent
-    cell.imageView?.image = NSWorkspace.shared.icon(forFile: node.url.path)
+    cell.imageView?.image = fileIcon(for: node)
     cell.toolTip = node.url.path
     return cell
+  }
+
+  /// `NSWorkspace.icon(forFile:)` is a LaunchServices lookup per call; rows
+  /// are re-created on every tree reload, so cache by kind and extension.
+  private func fileIcon(for node: WorkspaceTreeNode) -> NSImage {
+    let key = node.isDirectory ? "\u{0}directory" : node.url.pathExtension.lowercased()
+    if let cached = fileIconCache[key] {
+      return cached
+    }
+    let icon = NSWorkspace.shared.icon(forFile: node.url.path)
+    fileIconCache[key] = icon
+    return icon
   }
 
   func outlineView(
