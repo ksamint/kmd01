@@ -4,7 +4,10 @@ import Security
 
 /// Encrypted, device-local holding queue for captures that still need review.
 /// The helper and main app deliberately share this small storage contract.
+@MainActor
 struct ConversationCaptureQueue {
+  var onSharedContainerAvailability: ((Bool) -> Void)?
+
   private static let retention: TimeInterval = 30 * 24 * 60 * 60
   private static let service = "art.apuch.ksamint-markedit.conversation-capture"
   private static let account = "pending-queue-v1"
@@ -66,9 +69,11 @@ struct ConversationCaptureQueue {
   }
 
   private var directory: URL {
-    (FileManager.default.containerURL(
+    let sharedContainer = FileManager.default.containerURL(
       forSecurityApplicationGroupIdentifier: "group.art.apuch.ksamint-markedit"
-    ) ?? URL.applicationSupportDirectory)
+    )
+    onSharedContainerAvailability?(sharedContainer != nil)
+    return (sharedContainer ?? URL.applicationSupportDirectory)
       .appending(path: "ConversationInbox/Pending", directoryHint: .isDirectory)
   }
 

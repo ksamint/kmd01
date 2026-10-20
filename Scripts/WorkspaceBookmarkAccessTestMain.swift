@@ -35,6 +35,7 @@ private final class FakeBookmarks {
 @main
 private enum WorkspaceBookmarkAccessTestMain {
   static func main() throws {
+    testAccessIssueClassification()
     let names = (0 ..< 3).map { "kmd-workspace-grant-tests-\(UUID().uuidString)-\($0)" }
     let stores = names.map { required(UserDefaults(suiteName: $0)) }
     defer { for (store, name) in zip(stores, names) { store.removePersistentDomain(forName: name) } }
@@ -153,5 +154,30 @@ private enum WorkspaceBookmarkAccessTestMain {
   private static func required<Value>(_ value: Value?) -> Value {
     guard let value else { preconditionFailure("Required test fixture or bookmark result is missing") }
     return value
+  }
+
+  private static func testAccessIssueClassification() {
+    let cases: [(Error, WorkspaceAccessIssue)] = [
+      (CocoaError(.fileReadNoPermission), .permissionRequired),
+      (CocoaError(.fileReadNoSuchFile), .notFound),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)), .permissionRequired),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM)), .permissionRequired),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT)), .notFound),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(ENODEV)), .storageUnavailable),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTCONN)), .storageUnavailable),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int(ENETUNREACH)), .storageUnavailable),
+      (NSError(domain: NSPOSIXErrorDomain, code: Int.max), .unavailable),
+      (Failure.unavailable, .unavailable),
+    ]
+    for (error, expected) in cases {
+      precondition(WorkspaceAccessIssue.classify(error) == expected)
+      let wrapped = NSError(
+        domain: NSCocoaErrorDomain,
+        code: CocoaError.fileReadUnknown.rawValue,
+        userInfo: [NSUnderlyingErrorKey: error]
+      )
+      precondition(WorkspaceAccessIssue.classify(wrapped) == expected)
+    }
+    print("Workspace access classification distinguishes missing paths, permissions and unavailable storage.")
   }
 }

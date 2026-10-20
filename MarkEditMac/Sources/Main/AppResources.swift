@@ -117,6 +117,21 @@ enum Localized {
     static let authorizationExpired = String(localized: "Access to this workspace has expired.", comment: "Expired workspace bookmark message")
     static let reauthorize = String(localized: "Reauthorize…", comment: "Reauthorize an expired workspace")
     static let authorizationFailed = String(localized: "Couldn’t Open Workspace", comment: "Workspace authorization failure title")
+    static let retryAccess = String(localized: "Retry", comment: "Retry restoring the saved workspace without opening a permission dialog")
+
+    static func accessIssue(_ issue: WorkspaceAccessIssue) -> String {
+      switch issue {
+      case .permissionRequired:
+        String(localized: "Workspace access needs attention. Choose the folder to grant access.", comment: "Workspace access failed; this does not prove the user revoked permission")
+      case .notFound:
+        String(localized: "Workspace folder not found. It may have moved or its volume may be disconnected.", comment: "A missing path does not distinguish a move, deletion, or disconnected volume")
+      case .storageUnavailable:
+        String(localized: "Workspace storage is unavailable. Reconnect it, then retry.", comment: "Workspace volume or network location is unavailable")
+      case .unavailable:
+        String(localized: "Workspace could not be restored. Retry or open the folder again.", comment: "Unknown workspace restoration failure; the saved bookmark is retained")
+      }
+    }
+
     static let newFile = String(localized: "New File", comment: "Create a file in the workspace")
     static let newFolder = String(localized: "New Folder", comment: "Create a folder in the workspace")
     static let untitledFile = String(localized: "Untitled", comment: "Default name for a workspace file")

@@ -143,10 +143,12 @@ final class WorkspaceSession {
   let deepSearchIndex: WorkspaceDeepSearch
 
   private(set) var isAuthorized: Bool
+  private(set) var accessIssue: WorkspaceAccessIssue?
   var onFileSystemChange: (() -> Void)?
   var onIndexStateChange: ((WorkspaceIndexState) -> Void)?
 
   private let bookmark: Data
+  private let hasSecurityScope: Bool
   private let filePresenter: WorkspaceFilePresenter
   private var refreshTask: Task<Void, Never>?
   private var rebuildTask: Task<Void, Never>?
@@ -156,7 +158,9 @@ final class WorkspaceSession {
     let standardizedRoot = rootURL.standardizedFileURL
     self.rootURL = standardizedRoot
     self.bookmark = bookmark
+    self.hasSecurityScope = isAuthorized
     self.isAuthorized = isAuthorized
+    self.accessIssue = isAuthorized ? nil : .unavailable
     self.index = WorkspaceIndex(rootURL: standardizedRoot)
     self.deepSearchIndex = WorkspaceDeepSearch(rootURL: standardizedRoot)
     self.filePresenter = WorkspaceFilePresenter(rootURL: standardizedRoot)
@@ -170,7 +174,7 @@ final class WorkspaceSession {
   deinit {
     refreshTask?.cancel()
     NSFileCoordinator.removeFilePresenter(filePresenter)
-    if isAuthorized {
+    if hasSecurityScope {
       rootURL.stopAccessingSecurityScopedResource()
     }
   }
@@ -261,10 +265,12 @@ final class WorkspaceSession {
 
       do {
         let fileCount = try await index.rebuild()
-        if !Task.isCancelled {
+        if !Task.isCancelled, isAuthorized {
+          accessIssue = nil
           onIndexStateChange?(.ready(fileCount: fileCount))
         }
       } catch {
+        recordIndexAccessFailure(error)
         onIndexStateChange?(.failed)
       }
 
@@ -368,6 +374,7 @@ final class WorkspaceSession {
       }
 
       onFileSystemChange?()
+      guard isAuthorized else { return }
 
       do {
         if let changedURL, contains(changedURL) {
@@ -376,13 +383,36 @@ final class WorkspaceSession {
           _ = try await index.rebuild()
         }
 
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, isAuthorized else {
           return
         }
+        accessIssue = nil
         onIndexStateChange?(await index.state)
       } catch {
+        recordIndexAccessFailure(error)
         onIndexStateChange?(.failed)
       }
+    }
+  }
+
+  func recordAccessFailure(_ error: Error) {
+    accessIssue = WorkspaceAccessIssue.classify(error)
+    isAuthorized = false
+    onIndexStateChange?(.failed)
+  }
+
+  private func recordIndexAccessFailure(_ error: Error) {
+    // Index-cache and SQLite failures are not evidence of a workspace access
+    // problem. Only classify errors explicitly associated with this root.
+    let nsError = error as NSError
+    let path = nsError.userInfo[NSFilePathErrorKey] as? String
+      ?? (nsError.userInfo[NSURLErrorKey] as? URL)?.path
+    guard let path else { return }
+    let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+    let rootComponents = rootURL.pathComponents
+    guard components.starts(with: rootComponents) else { return }
+    if WorkspaceAccessIssue.classify(error) != .unavailable {
+      recordAccessFailure(error)
     }
   }
 }
@@ -411,12 +441,16 @@ final class WorkspaceTreeNode: NSObject {
   weak var parent: WorkspaceTreeNode?
 
   private var loadedChildren: [WorkspaceTreeNode]?
+  private(set) var accessError: Error?
 
   init(url: URL, parent: WorkspaceTreeNode? = nil) {
-    let values = try? url.resourceValues(forKeys: [
-      .isDirectoryKey,
-      .isSymbolicLinkKey,
-    ])
+    let values: URLResourceValues?
+    do {
+      values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+    } catch {
+      values = nil
+      accessError = error
+    }
 
     self.url = url.standardizedFileURL
     self.isDirectory = values?.isDirectory == true
@@ -438,11 +472,18 @@ final class WorkspaceTreeNode: NSObject {
       .isSymbolicLinkKey,
       .isHiddenKey,
     ]
-    let urls = (try? FileManager.default.contentsOfDirectory(
-      at: url,
-      includingPropertiesForKeys: properties,
-      options: showHiddenFiles ? [] : [.skipsHiddenFiles]
-    )) ?? []
+    let urls: [URL]
+    do {
+      urls = try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: properties,
+        options: showHiddenFiles ? [] : [.skipsHiddenFiles]
+      )
+      accessError = nil
+    } catch {
+      accessError = error
+      return []
+    }
 
     let children = urls
       .map { WorkspaceTreeNode(url: $0, parent: self) }

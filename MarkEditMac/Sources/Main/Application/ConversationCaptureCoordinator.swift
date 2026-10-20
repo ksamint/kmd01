@@ -8,6 +8,7 @@ enum ConversationCaptureServiceState: Equatable {
   case approvalRequired
   case notRegistered
   case unavailable
+  case sharingUnavailable
 
   var localizedDescription: String {
     switch self {
@@ -23,6 +24,8 @@ enum ConversationCaptureServiceState: Equatable {
       String(localized: "The background helper is not registered")
     case .unavailable:
       String(localized: "Background capture is unavailable on this Mac")
+    case .sharingUnavailable:
+      String(localized: "Capture sharing is unavailable. Check the app installation or access.")
     }
   }
 
@@ -36,7 +39,7 @@ enum ConversationCaptureServiceState: Equatable {
       "exclamationmark.triangle.fill"
     case .disabled:
       "pause.circle"
-    case .notRegistered, .unavailable:
+    case .notRegistered, .unavailable, .sharingUnavailable:
       "xmark.circle"
     }
   }
@@ -47,7 +50,7 @@ enum ConversationCaptureServiceState: Equatable {
       .systemGreen
     case .approvalRequired:
       .systemOrange
-    case .disabled, .registered, .notRegistered, .unavailable:
+    case .disabled, .registered, .notRegistered, .unavailable, .sharingUnavailable:
       .secondaryLabelColor
     }
   }
@@ -76,8 +79,12 @@ final class ConversationCaptureCoordinator: NSObject {
   private var captureNextCopy = false
   private var lastSavedURL: URL?
   private var isAgentProcess = false
+  private var sharedConfigurationUnavailable = false
+  private var sharedContainerUnavailable = false
   private let documentCodec = ConversationCaptureDocument()
-  private let pendingQueue = ConversationCaptureQueue()
+  private lazy var pendingQueue = ConversationCaptureQueue { [weak self] available in
+    self?.sharedContainerUnavailable = !available
+  }
   private lazy var workspaceGrantPublisher = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit")
     .map { WorkspaceBookmarkPublisher(shared: $0) }
 
@@ -315,6 +322,7 @@ final class ConversationCaptureCoordinator: NSObject {
 extension ConversationCaptureCoordinator {
   var serviceState: ConversationCaptureServiceState {
     guard AppPreferences.General.conversationCaptureEnabled else { return .disabled }
+    if sharedConfigurationUnavailable || sharedContainerUnavailable { return .sharingUnavailable }
     // Distinguish a running helper from a login item that is only registered
     // for the next login session.
     if isCaptureHelperRunning { return .enabled }
@@ -621,7 +629,12 @@ extension ConversationCaptureCoordinator {
   }
 
   func synchronizeHelperConfiguration() {
-    guard let defaults = UserDefaults(suiteName: "group.art.apuch.ksamint-markedit") else { return }
+    let groupIdentifier = "group.art.apuch.ksamint-markedit"
+    guard let defaults = UserDefaults(suiteName: groupIdentifier) else {
+      sharedConfigurationUnavailable = true
+      return
+    }
+    sharedConfigurationUnavailable = false
     defaults.set(AppPreferences.General.conversationCaptureEnabled, forKey: "conversationCaptureEnabled")
     defaults.set(
       AppPreferences.General.conversationCaptureSyncInterval.rawValue,

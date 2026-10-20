@@ -1,5 +1,44 @@
 import Foundation
 
+enum WorkspaceAccessIssue: Equatable {
+  case permissionRequired
+  case notFound
+  case storageUnavailable
+  case unavailable
+
+  static func classify(_ error: Error) -> Self {
+    classify(error as NSError, depth: 0)
+  }
+
+  private static func classify(_ error: NSError, depth: Int) -> Self {
+    // Underlying POSIX errors often carry the useful reason behind a generic
+    // Cocoa bookmark/read error. Limit recursion for malformed error chains.
+    if depth < 8, let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+      let issue = classify(underlying, depth: depth + 1)
+      if issue != .unavailable { return issue }
+    }
+    if error.domain == NSPOSIXErrorDomain {
+      switch error.code {
+      case Int(EACCES), Int(EPERM): return .permissionRequired
+      case Int(ENOENT): return .notFound
+      case Int(ENODEV), Int(ENXIO), Int(ENOTCONN), Int(ENETDOWN), Int(ENETUNREACH), Int(EHOSTUNREACH):
+        return .storageUnavailable
+      default: return .unavailable
+      }
+    }
+    if error.domain == NSCocoaErrorDomain {
+      switch error.code {
+      case CocoaError.fileReadNoPermission.rawValue, CocoaError.fileWriteNoPermission.rawValue:
+        return .permissionRequired
+      case CocoaError.fileNoSuchFile.rawValue, CocoaError.fileReadNoSuchFile.rawValue:
+        return .notFound
+      default: return .unavailable
+      }
+    }
+    return .unavailable
+  }
+}
+
 enum WorkspaceBookmarkNotifications {
   static let requested = Notification.Name("art.apuch.ksamint.workspace-grant-requested")
   static let changed = Notification.Name("art.apuch.ksamint.capture-settings-changed")
