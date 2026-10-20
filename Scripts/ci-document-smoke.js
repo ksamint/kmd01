@@ -240,9 +240,10 @@ function run(argv) {
       throw new Error('Window diagnostics require an isolated hosted runner');
     }
     ObjC.import('CoreGraphics');
+    ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
     if (!$.CGPreflightScreenCaptureAccess()) return '';
     return diagnosticWindowIDs(ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(
-      $.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID,
+      $.kCGWindowListOptionOnScreenOnly, 0, // kCGNullWindowID is a C macro, absent from JXA.
     )), Number(expectedPID));
   }
   const trace = typeof module === 'undefined' ? value => console.log(`[smoke] ${value}`) : () => {};
