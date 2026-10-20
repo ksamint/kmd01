@@ -58,7 +58,7 @@ function exactAXWindow(windows, fixture, normalize) {
   return matches[0];
 }
 
-function exactAXEditor(window, expectedSource, trace) {
+function exactAXEditor(window, trace) {
   const elements = window.entireContents();
   if (!Array.isArray(elements) || elements.length > 256) throw new Error('AX document subtree exceeds diagnostic bound');
   const roles = {};
@@ -71,23 +71,42 @@ function exactAXEditor(window, expectedSource, trace) {
     let settable = false;
     try { settable = element.attributes.byName('AXValue').settable(); } catch (_) {}
     trace(`ax:text-area length=${typeof value === 'string' ? value.length : 'unavailable'} settable=${settable}`);
-    if (typeof value === 'string' && value === expectedSource && settable === true) matches.push(element);
+    if (typeof value === 'string' && settable === true) matches.push(element);
   }
   trace(`ax:roles=${JSON.stringify(roles)}`);
   // The native WebView wrapper and inner CodeMirror editor may both expose a
-  // text-area role. Never select by role/order alone or accept partial text.
-  if (matches.length !== 1) throw new Error(`Expected one writable full-text AX editor; found ${matches.length}`);
+  // text-area role. The complete text is verified using the editor's copy command.
+  if (matches.length !== 1) throw new Error(`Expected one writable AX editor; found ${matches.length}`);
   return matches[0];
+}
+
+function putClipboard(text) {
+  const clipboard = $.NSPasteboard.generalPasteboard;
+  clipboard.clearContents;
+  if (!clipboard.setStringForType(text, $.NSPasteboardTypeString)) throw new Error('Could not set isolated test clipboard');
+  return Number(clipboard.changeCount);
+}
+
+function copyFocusedSource(events, assertFocus) {
+  assertFocus();
+  events.keystroke('a', { using: 'command down' });
+  const sentinel = '__kmd_lifecycle_copy_pending__';
+  const generation = putClipboard(sentinel);
+  assertFocus();
+  events.keystroke('c', { using: 'command down' });
+  const clipboard = $.NSPasteboard.generalPasteboard;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const text = ObjC.unwrap(clipboard.stringForType($.NSPasteboardTypeString));
+    if (Number(clipboard.changeCount) > generation && typeof text === 'string' && text !== sentinel) return text;
+    delay(0.05);
+  }
+  throw new Error('The exact fixture editor did not copy its selected contents');
 }
 
 function operateAXDocument(events, process, pid, fixture, normalize, expectedSource, newSource, trace) {
   if (process.unixId() !== pid) throw new Error('AX process identity changed');
   const window = exactAXWindow(process.windows(), fixture, normalize);
-  const editor = exactAXEditor(window, expectedSource, trace);
-  if (newSource === undefined) {
-    trace('ax:restoration-verified');
-    return; // No open, focus, selection, clipboard, or other mutation on restore.
-  }
+  const editor = exactAXEditor(window, trace);
   if (window.sheets().length !== 0) throw new Error('Exact fixture window has a modal sheet');
   process.frontmost = true;
   window.actions.byName('AXRaise').perform();
@@ -101,9 +120,18 @@ function operateAXDocument(events, process, pid, fixture, normalize, expectedSou
     }
   };
   assertFocus();
-  trace('ax:source-set');
-  editor.attributes.byName('AXValue').value = newSource;
-  if (axValue(editor, 'AXValue') !== newSource) throw new Error('AX editor did not accept the complete fixture payload');
+  // WebKit AXValue can contain layout newlines. CodeMirror copies its full model,
+  // so this checks source bytes without confusing rendered text with document data.
+  if (copyFocusedSource(events, assertFocus) !== expectedSource) throw new Error('Copied fixture source differs from its saved file');
+  if (newSource === undefined) {
+    trace('ax:restoration-verified');
+    return; // Selection/copy only: never reopen or edit a restored document.
+  }
+  putClipboard(newSource);
+  assertFocus();
+  trace('ax:source-paste');
+  events.keystroke('v', { using: 'command down' });
+  if (copyFocusedSource(events, assertFocus) !== newSource) throw new Error('Editor did not accept the complete fixture payload');
   assertFocus();
   trace('ax:save-command');
   events.keystroke('s', { using: 'command down' });
@@ -225,5 +253,5 @@ function run(argv) {
 
 if (typeof module !== 'undefined') module.exports = {
   exactDocument, verifyRestoredDocument, saveExactDocument, requireAutomationPermission, isProductionBundle, run,
-  exactAXWindow, exactAXEditor, operateAXDocument,
+  exactAXWindow, exactAXEditor, operateAXDocument, copyFocusedSource,
 };
