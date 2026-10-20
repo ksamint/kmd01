@@ -70,6 +70,12 @@ Local completed checks (record only actual completed results):
   standalone Swift stability suite and strict SwiftLint. These checks do not
   replace full hosted AppKit runtime
   validation or final signed-artifact acceptance.
+- Run `39440308674` passed all non-Mac jobs, but both Mac jobs stopped at a
+  new test's fixed 80 ms wait for a close callback, before building the App.
+  The test now awaits the actual callback under the existing process watchdog
+  and deliberately delays the failed write beyond 80 ms. No production
+  behavior or acceptance timeout was relaxed; the complete hosted run remains
+  required.
 - Hosted run `39414437185` passed all Linux jobs, including Cloud dependency
   audit. Both Mac jobs passed clipboard/bookmark/transport harnesses, then failed
   strict SwiftLint after the SQLite actor cleanup compile error was fixed.
