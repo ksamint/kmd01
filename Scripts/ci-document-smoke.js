@@ -7,6 +7,13 @@ function exactDocument(documents, fixture, normalize) {
   return matches[0];
 }
 
+function verifyRestoredDocument(documents, fixture, normalize, expectedSource) {
+  const document = exactDocument(documents, fixture, normalize);
+  if (typeof expectedSource !== 'string' || document.source() !== expectedSource) {
+    throw new Error('Restored fixture source differs from the saved file');
+  }
+}
+
 function isProductionBundle(identifier) {
   return [
     'art.apuch.ksamint.markedit',
@@ -23,7 +30,7 @@ function run(argv) {
     const path = value.startsWith('file:') ? $.NSURL.URLWithString(value).path : $(value);
     return ObjC.unwrap(path.stringByResolvingSymlinksInPath);
   };
-  const [mode, appPath, expectedPID, fixture] = argv;
+  const [mode, appPath, expectedPID, fixture, saveSource] = argv;
   const applications = $.NSWorkspace.sharedWorkspace.runningApplications;
   const matches = [];
   const production = [];
@@ -61,11 +68,17 @@ function run(argv) {
     app.open(Path(fixture));
   } else if (mode === 'save') {
     const document = exactDocument(app.documents(), normalize(fixture), normalize);
-    document.source = '# Save smoke test';
+    document.source = saveSource === undefined ? '# Save smoke test' : saveSource;
     app.save(document);
+  } else if (mode === 'restored') {
+    // Read-only: opening here would conceal a failed AppKit restoration.
+    const source = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(
+      fixture, $.NSUTF8StringEncoding, null,
+    ));
+    verifyRestoredDocument(app.documents(), normalize(fixture), normalize, source);
   } else {
     throw new Error('Unknown smoke operation');
   }
 }
 
-if (typeof module !== 'undefined') module.exports = { exactDocument, isProductionBundle, run };
+if (typeof module !== 'undefined') module.exports = { exactDocument, verifyRestoredDocument, isProductionBundle, run };
