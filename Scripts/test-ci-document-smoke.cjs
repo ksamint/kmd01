@@ -203,6 +203,10 @@ const systemEvents = { keystroke: (...args) => {
   if (args[0] === 'c') { clipboardText = editorSource; clipboardGeneration++; }
   if (args[0] === 'v') editorSource = clipboardText;
 } };
+axWindow.entireContents = () => {
+  assert.ok(raised > 0, 'Raise the exact restored window before querying its WebKit subtree');
+  return [wrapper, axEditor];
+};
 // AX layout text may add a newline; only the normal copy path is the source oracle.
 axText.value = savedSource + '\n';
 operateAXDocument(systemEvents, axProcess, 103, '/tmp/fixture.md', normalize, savedSource, undefined, () => {});

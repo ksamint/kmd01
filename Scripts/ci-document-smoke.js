@@ -106,10 +106,11 @@ function copyFocusedSource(events, assertFocus) {
 function operateAXDocument(events, process, pid, fixture, normalize, expectedSource, newSource, trace) {
   if (process.unixId() !== pid) throw new Error('AX process identity changed');
   const window = exactAXWindow(process.windows(), fixture, normalize);
-  const editor = exactAXEditor(window, trace);
   if (window.sheets().length !== 0) throw new Error('Exact fixture window has a modal sheet');
+  // WebKit may omit the web subtree of a restored background window until raised.
   process.frontmost = true;
   window.actions.byName('AXRaise').perform();
+  const editor = exactAXEditor(window, trace);
   editor.focused = true;
   const assertFocus = () => {
     const focusedWindow = axValue(process, 'AXFocusedWindow');

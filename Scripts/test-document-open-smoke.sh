@@ -68,7 +68,7 @@ capture_failure() {
     diagnostic_command sample "$2" 2 10 -file "$temporary/osascript-sample.log" >/dev/null 2>&1
   fi
   diagnostic_command /usr/bin/log show --last 2m --style compact --info \
-    --predicate "processImagePath == '$executable' OR (process == 'tccd' AND eventMessage CONTAINS 'art.apuch.ksamint.markedit')" \
+    --predicate "(processIdentifier == ${app_pid:-0} AND processImagePath == '$executable') OR (process == 'tccd' AND eventMessage CONTAINS 'art.apuch.ksamint.markedit')" \
     > "$temporary/automation.log" 2>&1
   for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"; do
     [ -f "$diagnostic" ] || continue
