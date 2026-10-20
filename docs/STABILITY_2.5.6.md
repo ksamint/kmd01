@@ -22,7 +22,7 @@ approval**. Do not create a positive acceptance JSON from this document.
 | Area | Source implemented | Evidence / remaining check |
 | --- | --- | --- |
 | Installed fixes + PR #14 | Integrated | Both hosted Universal builds and Swift suites passed; lifecycle release blocker below |
-| AppKit read/write isolation | Concurrent read/write disabled; synchronous read completion; Save As refresh and awaited autosave failures | Actual crash stacks traced; immediate Save All regression; full lifecycle matrix pending |
+| AppKit read/write isolation | Concurrent read/write disabled; synchronous read completion; actual save callbacks, bounded editor refresh and failure-aware close/quit | Actual crash stacks traced; immediate Save All and delayed/failed save regressions; latest full hosted build and lifecycle matrix pending |
 | Agent/MCP/process pipes | Concurrent stdout/stderr drains, bounded cleanup/cancel/disconnect | Actual Swift transport/process harness and both hosted builds passed |
 | Web sync | Read-only interval, common write guard, fresh stored snapshot, network deadline, late-result rejection | Automated failure/concurrency tests; live cloud/manual browser pending |
 | Manifest cleanup | Orphans only removed after manifest save | Notes and attachments failure regression tests |
@@ -54,6 +54,22 @@ Local completed checks (record only actual completed results):
   `/usr/bin/python3` works. No host Python installation was changed.
 - Local host has Command Line Tools only: full Xcode app/package verification
   has **not** been substituted by the standalone Swift checks.
+- Save completion review reproduced the previous premature-success bug: the
+  old method returned after 0.631 seconds while its 0.85-second write was still
+  pending. Save, Save As, draft termination, native delegate and scripting
+  entries now await actual AppKit completion. Failed/cancelled writes retain
+  unsaved state and prevent close/quit; idle saving no longer clears the editor
+  before writing. Missing editor text fails instead of saving stale content.
+  A five-second renderer deadline ignores late callbacks, and an atomic
+  saved-text comparison prevents marking newer edits clean.
+  The harness compiles actual production method bodies against Swift 6
+  AppKit/WebKit signatures and exercises them with headless framework doubles.
+  Slow/failing/cancelled writes, missing snapshots, read/write revision races,
+  native close cancellation/discard, quit refusal/retry, serialized script
+  saves and renderer timeout regressions pass locally, alongside the complete
+  standalone Swift stability suite and strict SwiftLint. These checks do not
+  replace full hosted AppKit runtime
+  validation or final signed-artifact acceptance.
 - Hosted run `39414437185` passed all Linux jobs, including Cloud dependency
   audit. Both Mac jobs passed clipboard/bookmark/transport harnesses, then failed
   strict SwiftLint after the SQLite actor cleanup compile error was fixed.
@@ -141,8 +157,25 @@ Local completed checks (record only actual completed results):
   ZIP SHA256 `54ab8dbf8e4c98d47ef603ef87dae8940540ca48293341582bac77e0edd95910`.
   Diagnostic cycle limits were 90; normal acceptance remains 30. No timeout
   was extended, save retried, cache deleted or production app replaced.
-  A controlled WebKit configuration comparison is pending; this blocker has
+  The controlled WebKit comparisons below also reproduce this blocker; it has
   no accepted production fix yet.
+- The unchanged Xcode 26.6 CI build also reproduced the same macOS 15 hang in
+  diagnostic `39435676584`: 63 successful cycles, then a blank restored editor
+  on cycle 64. Its ZIP SHA256 is
+  `312fa664913454d1990aae941b65ecd7a85ff62cf87d486310644d051639440a`,
+  from the same source commit above. It is an ad hoc CI artifact, not a
+  Developer ID signed candidate.
+- Minimal standalone WebKit diagnostic `39435535115` reproduced the same
+  Core Animation/Metal/file-lock stack both with and without the two startup
+  and first-paint overrides (35 and 40 successful launches respectively).
+  That comparison retained the app's private transparent-background setting.
+  A further control, `39436863892`, removed **all** private settings and used
+  only `WKWebViewConfiguration()` and public APIs: it reproduced the same
+  stack on launch 27 after 26 successes. No kmd document/editor code was
+  compiled into that control. This establishes a reproduction independent of
+  kmd code on the hosted macOS 15 image, not proof about physical Macs or a
+  reason to waive runtime acceptance. Independent macOS 15 validation remains
+  required; no speculative rendering workaround was added.
 
 ## Repository disclosure and settings
 

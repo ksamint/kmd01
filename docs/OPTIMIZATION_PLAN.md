@@ -38,6 +38,11 @@ Crashes and hangs:
 - Archive listing drains stdout and stderr concurrently, with bounded output and a timeout.
 
 Data loss:
+- Save completion now follows AppKit's real callback, replacing a fixed 600 ms
+  delay. Missing editor snapshots, failed writes and cancellation block close
+  and quit; newer edits remain dirty. Actual-method regression checks pass
+  locally, including a five-second unresponsive-renderer deadline. Latest
+  hosted compilation/runtime and signed acceptance remain pending.
 - Document reads now finish decoding before returning to AppKit, preventing an
   immediate Save All from serializing empty or stale text. The actual-method
   regression passes for delayed decoding and >200 KB content; full lifecycle
