@@ -200,7 +200,7 @@ jobs:
             fi
             chmod 600 "$HOME/.ssh/ksamint_tap"
             ssh-keygen -y -f "$HOME/.ssh/ksamint_tap" >/dev/null
-            ssh-keyscan github.com >> "$HOME/.ssh/known_hosts"
+            gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
             export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ksamint_tap -o IdentitiesOnly=yes"
             if [ -d "$tap" ]; then
               brew untap --force ksamint/ksamint
