@@ -80,7 +80,18 @@ capture_failure() {
   diagnostic_command /usr/bin/log show --last 2m --style compact --info \
     --predicate "processIdentifier == ${app_pid:-0} AND processImagePath == '$executable'" \
     > "$temporary/automation.log" 2>&1
-  for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log"; do
+  # Only sample renderer PIDs reported unresponsive by this exact app process.
+  sed -n 's/.*\[PID=\([0-9][0-9]*\)\] WebProcessProxy::didBecomeUnresponsive:.*/\1/p' \
+    "$temporary/automation.log" | sort -u | head -4 | while IFS= read -r renderer_pid; do
+      renderer_command=$(ps -p "$renderer_pid" -o comm= 2>/dev/null || true)
+      case "$renderer_command" in
+        */com.apple.WebKit.WebContent)
+          diagnostic_command sample "$renderer_pid" 2 10 \
+            -file "$temporary/webcontent-$renderer_pid.log" >/dev/null 2>&1 ;;
+      esac
+    done
+  for diagnostic in "$temporary/app-sample.log" "$temporary/osascript-sample.log" \
+    "$temporary/automation.log" "$temporary"/webcontent-*.log; do
     [ -f "$diagnostic" ] || continue
     echo "Diagnostic: $(basename "$diagnostic")" >&2
     cat "$diagnostic" >&2
@@ -145,6 +156,7 @@ cleanup() {
   rm -f "$fixture" "$temporary/saved.md" "$temporary/restoration-error.log"
   rm -f "$temporary/diagnostics-captured" "$temporary/diagnostic-pid.log" \
     "$temporary/app-sample.log" "$temporary/osascript-sample.log" "$temporary/automation.log" "$temporary/window-ids"
+  rm -f "$temporary"/webcontent-*.log
   rmdir "$temporary" 2>/dev/null || true
   exit "$result"
 }

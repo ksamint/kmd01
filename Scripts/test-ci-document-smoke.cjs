@@ -281,6 +281,15 @@ assert.throws(() => diagnosticWindowIDs(Array(9).fill(diagnosticWindow), 103), /
 $.CGPreflightScreenCaptureAccess = () => false;
 $.CGWindowListCopyWindowInfo = () => { throw new Error('Must not query windows without existing capture access'); };
 assert.equal(run(['diagnostic-window-ids', appPath, '103']), '');
+$.CGPreflightScreenCaptureAccess = () => true;
+$.kCGWindowListOptionOnScreenOnly = '1';
+ObjC.deepUnwrap = value => value;
+$.CGWindowListCopyWindowInfo = (option, relativeWindow) => {
+  assert.equal(option, '1');
+  assert.equal(relativeWindow, 0);
+  return [diagnosticWindow, { ...diagnosticWindow, kCGWindowOwnerPID: 999 }];
+};
+assert.equal(run(['diagnostic-window-ids', appPath, '103']), '42');
 $.NSProcessInfo.processInfo.environment.objectForKey = () => undefined;
 assert.throws(() => run(['diagnostic-window-ids', appPath, '103']), /isolated hosted runner/);
 console.log('Window diagnostics are nonprompting, hosted-only and limited to exact-PID visible application windows.');
