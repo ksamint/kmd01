@@ -60,6 +60,7 @@ jobs:
           node Scripts/validate-product-identity.mjs
           node Scripts/validate-localizations.mjs
           python3 Scripts/test-ci-release-gates.py
+          python3 Scripts/test-ci-candidate-provenance.py
           node Scripts/test-ci-document-smoke.cjs
           python3 Scripts/test-release-profile.py
           python3 Scripts/test-release-signing.py
