@@ -47,7 +47,7 @@ Local completed checks (record only actual completed results):
 - Clipboard decoder/history harness and helper Swift typecheck passed after
   cross-process grant changes. Independent review added stale-refresh generation
   and long-lived Quick Action scope ownership regressions; tests/typechecks passed.
-- CI gates: **4 tests**; profile verifier: **9 tests** (normal and optimized
+- CI gates: **6 tests**; profile verifier: **9 tests** (normal and optimized
   Python); installer rollback/draft selection: **5 tests**; exact-document/PID mocks passed.
   Actionlint and ShellCheck passed on the integrated source.
 - Local default Homebrew Python 3.14 has an unrelated pyexpat linker error;
@@ -103,6 +103,12 @@ Use dedicated documents in an isolated test workspace/account. Never edit the
 frontmost document by assumption. Save `.xcresult`, sanitized logs, crash
 summaries, final SHA256s and exact component identities.
 
+Perform the full lifecycle, permission-persistence, upgrade and 24-hour checks
+below on the user's one designated acceptance Mac. That Mac may run macOS 15
+or 26. On the other OS, run the same final signed Universal artifact and record
+successful launch and dedicated-document open/save compatibility evidence.
+The other OS does not require another 24-hour session or two full reboots.
+
 - 30 open/edit/save/quit/restore cycles; recent files, restored windows, unsaved
   drafts, autosave, Save As, Save All. Compare saved bytes and crash-report times.
 - Agent cancellation, process exit and peer disconnect; large stdout AND stderr
@@ -115,11 +121,21 @@ summaries, final SHA256s and exact component identities.
 - Verify source and final signed entitlements/profile authorization for existing
   App Group on main, Helper, Finder and Quick Action. Do not rename containers,
   reset TCC, request Full Disk Access, or click permission dialogs automatically.
-- Exact same Xcode 26.6 Universal artifact runs on macOS 15 and 26, remains healthy
-  for at least 24 hours, and passes Gatekeeper/notarization/staple/signature checks.
+- Exact same Xcode 26.6 Universal artifact runs on macOS 15 and 26 and passes
+  Gatekeeper/notarization/staple/signature checks. The designated acceptance Mac
+  remains healthy for at least 24 hours.
 - Back up App/data with restrictive permissions; quit normally; defer replacing
   the App if unsaved documents remain. Roll back App only, keep new user data.
 
 The finalizer only publishes hashes approved in a protected-main
 `docs/release-acceptance/v2.5.6.json` record. Until all pending rows are evidenced,
 **do not state that crashes or repeated authorization are solved in production**.
+
+The acceptance record's commit and artifact SHA256 map apply to both `systems`
+rows (one for `macOS: "15"`, one for `"26"`). Exactly one row has
+`acceptanceHost: true`; it requires the full matrix, at least 24 completed hours,
+30 lifecycle cycles, 10 quit/relaunch cycles and two user-arranged full reboots.
+The other row has `acceptanceHost: false` and requires `launch` and
+`document-open-save` checks to pass. Both rows require real evidence references
+and timezone-qualified start/end timestamps showing completed testing. An
+ad hoc CI smoke test alone is not evidence for the final signed artifact.

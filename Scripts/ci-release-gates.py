@@ -27,6 +27,7 @@ JOBS = {'mac': 'mac', 'runtime-compatibility': 'mac',
 MATRIX = ('launch', 'document-open-save', 'clipboard-text', 'clipboard-rich-text',
           'clipboard-html', 'clipboard-image', 'clipboard-file', 'finder',
           'quick-action', 'preview', 'sleep-wake', 'logout-login', 'same-identity-upgrade', 'reboot')
+COMPATIBILITY_MATRIX = ('launch', 'document-open-save')
 
 
 def require(condition, message):
@@ -92,17 +93,23 @@ def acceptance(record, commit, artifacts, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
     rows = record.get('systems', [])
     require(len(rows) == 2 and {row.get('macOS') for row in rows} == {'15', '26'},
-            'Acceptance required on macOS 15 and 26')
+            'Exact-artifact runtime evidence required on macOS 15 and 26')
+    require(all(isinstance(row.get('acceptanceHost'), bool) for row in rows)
+            and sum(row['acceptanceHost'] for row in rows) == 1,
+            'Exactly one designated acceptance host required')
     for row in rows:
         start = dt.datetime.fromisoformat(row['startedAt'].replace('Z', '+00:00'))
         end = dt.datetime.fromisoformat(row['completedAt'].replace('Z', '+00:00'))
         require(start.tzinfo is not None and end.tzinfo is not None, 'UTC offsets required')
-        require(end <= now and (end - start).total_seconds() >= 86400,
-                'Each OS needs at least 24 hours of completed use')
-        require(row.get('fullReboots', 0) >= 2, 'Two full user-arranged reboots required')
-        require(row.get('lifecycleCycles', 0) >= 30, 'Thirty lifecycle cycles required')
-        require(row.get('quitRelaunchCycles', 0) >= 10, 'Ten quit/relaunch cycles required')
-        require(all(row.get('checks', {}).get(name) == 'pass' for name in MATRIX),
+        require(start < end <= now, 'Completed runtime evidence timestamps required')
+        if row['acceptanceHost']:
+            require((end - start).total_seconds() >= 86400,
+                    'Designated acceptance host needs at least 24 hours of completed use')
+            require(row.get('fullReboots', 0) >= 2, 'Two full user-arranged reboots required')
+            require(row.get('lifecycleCycles', 0) >= 30, 'Thirty lifecycle cycles required')
+            require(row.get('quitRelaunchCycles', 0) >= 10, 'Ten quit/relaunch cycles required')
+        checks = MATRIX if row['acceptanceHost'] else COMPATIBILITY_MATRIX
+        require(all(row.get('checks', {}).get(name) == 'pass' for name in checks),
                 'Runtime acceptance matrix incomplete')
         require(bool(row.get('evidence', '').strip()), 'Runtime evidence reference required')
 

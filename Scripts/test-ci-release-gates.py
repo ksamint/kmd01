@@ -40,15 +40,25 @@ class GateTests(unittest.TestCase):
             needs[job]['result'] = 'skipped'
         gates.readiness(needs)
 
-    def test_artifact_bound_completed_runtime_acceptance(self):
+    @staticmethod
+    def acceptance_fixture():
         commit = 'a' * 40
         hashes = {'app.dmg': 'b' * 64}
-        row = {'startedAt': '2026-01-01T00:00:00Z', 'completedAt': '2026-01-02T00:00:00Z',
+        row = {'acceptanceHost': True,
+               'startedAt': '2026-01-01T00:00:00Z', 'completedAt': '2026-01-02T00:00:00Z',
                'fullReboots': 2, 'lifecycleCycles': 30, 'quitRelaunchCycles': 10, 'checks': {key: 'pass' for key in gates.MATRIX},
                'evidence': 'acceptance log'}
+        compatibility = {'macOS': '26', 'acceptanceHost': False,
+                         'startedAt': '2026-01-02T00:00:00Z', 'completedAt': '2026-01-02T00:10:00Z',
+                         'checks': {key: 'pass' for key in gates.COMPATIBILITY_MATRIX},
+                         'evidence': 'exact-artifact compatibility runtime log'}
         record = {'schema': 1, 'commit': commit, 'approved': True, 'reviewer': 'owner',
-                  'artifacts': hashes, 'systems': [dict(row, macOS='15'), dict(row, macOS='26')]}
+                  'artifacts': hashes, 'systems': [dict(row, macOS='15'), compatibility]}
         now = dt.datetime(2026, 1, 3, tzinfo=dt.timezone.utc)
+        return record, commit, hashes, now
+
+    def test_artifact_bound_completed_runtime_acceptance(self):
+        record, commit, hashes, now = self.acceptance_fixture()
         gates.acceptance(record, commit, hashes, now)
         for field, value in [('commit', 'c' * 40), ('artifacts', {'app.dmg': 'c' * 64}),
                              ('approved', False), ('reviewer', ''), ('systems', [])]:
@@ -59,6 +69,34 @@ class GateTests(unittest.TestCase):
                              ('fullReboots', 1), ('lifecycleCycles', 29), ('quitRelaunchCycles', 9), ('checks', {}), ('evidence', '')]:
             broken = copy.deepcopy(record)
             broken['systems'][0][field] = value
+            with self.assertRaises(ValueError):
+                gates.acceptance(broken, commit, hashes, now)
+
+    def test_exactly_one_primary_host_on_either_supported_os(self):
+        record, commit, hashes, now = self.acceptance_fixture()
+        record['systems'][0]['macOS'], record['systems'][1]['macOS'] = '26', '15'
+        gates.acceptance(record, commit, hashes, now)
+        for flags in [(False, False), (True, True), (None, False), (True, 'false')]:
+            broken = copy.deepcopy(record)
+            for row, flag in zip(broken['systems'], flags):
+                row['acceptanceHost'] = flag
+            with self.assertRaises(ValueError):
+                gates.acceptance(broken, commit, hashes, now)
+
+    def test_compatibility_requires_completed_checks_and_evidence(self):
+        record, commit, hashes, now = self.acceptance_fixture()
+        for field, value in [('completedAt', '2026-01-02T00:00:00Z'),
+                             ('completedAt', '2026-01-01T23:59:59Z'),
+                             ('completedAt', '2026-02-01T00:00:00Z'),
+                             ('startedAt', '2026-01-02T00:00:00'),
+                             ('checks', {}), ('evidence', '')]:
+            broken = copy.deepcopy(record)
+            broken['systems'][1][field] = value
+            with self.assertRaises(ValueError):
+                gates.acceptance(broken, commit, hashes, now)
+        for check in gates.COMPATIBILITY_MATRIX:
+            broken = copy.deepcopy(record)
+            broken['systems'][1]['checks'][check] = 'fail'
             with self.assertRaises(ValueError):
                 gates.acceptance(broken, commit, hashes, now)
 
