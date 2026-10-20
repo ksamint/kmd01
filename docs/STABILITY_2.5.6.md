@@ -1,0 +1,120 @@
+# kmd 2.5.6 (19) acceptance ledger
+
+Updated 2026-10-20. This is an implementation/evidence ledger, **not release
+approval**. Do not create a positive acceptance JSON from this document.
+
+## Baseline and integration
+
+- Repository: `https://github.com/ksamint/kmd01`.
+- Worktree: `kmd01-stabilize`; branch `codex/stabilize-2.5.6`.
+- PR #14 baseline: `5eedf263cc36a172929b767bfa7b97db40b322a4`.
+- Preserved installed-only commits: `4ecbf6c`, `05a1f10`, `0d388e1`, `40bac91`.
+- Preserved original dirty worktrees; entitlement / manifest-cleanup source
+  patches copied to integration, generated assets rebuilt from integrated source.
+- Installed App remains **2.5.5 (18)**, commit
+  `40bac9139f371e808cc861480a7afe65d109f6d7`. No installation performed.
+- Crash evidence: 2026-10-19 17:28:15 NSDocument background-write executor trap;
+  17:28:19 NSDocumentController restore/open initializer on background queue.
+  Raw user crash reports are kept local, not published.
+
+## Implemented versus tested
+
+| Area | Source implemented | Evidence / remaining check |
+| --- | --- | --- |
+| Installed fixes + PR #14 | Integrated | Local tests below; full Xcode CI pending |
+| AppKit read/write isolation | Concurrent read/write disabled; Save As refresh and awaited autosave failures | Actual crash stacks traced; standalone override typecheck; full lifecycle matrix pending |
+| Agent/MCP/process pipes | Concurrent stdout/stderr drains, bounded cleanup/cancel/disconnect | Actual Swift transport/process harness; complete app CI pending |
+| Web sync | Read-only interval, common write guard, fresh stored snapshot, network deadline, late-result rejection | Automated failure/concurrency tests; live cloud/manual browser pending |
+| Manifest cleanup | Orphans only removed after manifest save | Notes and attachments failure regression tests |
+| Failed editor saves | Retain per-file edits until successfully written | Cross-file failure + newer-edit regressions |
+| Persistent access | Per-process persistent bookmarks, temporary cross-process handoff, scope balancing, stale refresh and revocation generations | Injected-operation tests and Swift typechecks; real signed/reboot matrix pending |
+| Final signing verifier | Exact source SHA, all component identity/version/SHA, entitlements/profile grants/expiry, hardened runtime, all Mach-O architectures | Synthetic positive/negative profile tests; real new candidate pending |
+| CI/release gates | Hosted Linux, automatic Mac matrix, fail-closed aggregate, protected-main signing, exact-asset acceptance | Local actionlint/shellcheck/unit tests; remote matrix pending |
+
+Local completed checks (record only actual completed results):
+
+- CoreEditor: build and **180 tests** passed.
+- WebApp: **78 tests across 16 files**, lint, build, build:mac and bundle validation
+  passed; dependency audit reports **0 vulnerabilities**. A single writer tab
+  per workspace prevents competing recovery; unsupported browsers fail closed.
+- AgentSDK: lint, build and **2 tests** passed after targeted Vitest,
+  brace-expansion and source-map-js patch updates; audit **0 vulnerabilities**.
+- ResourceModules: **5 signed modules** verified and **10 tests** passed.
+- Cloud: formatting, clippy (`-D warnings`), **19 tests** passed.
+- Identity: **2.5.6 (19)**; **2716 localized catalog entries** validated.
+- Clipboard decoder/history harness and helper Swift typecheck passed after
+  cross-process grant changes. Independent review added stale-refresh generation
+  and long-lived Quick Action scope ownership regressions; tests/typechecks passed.
+- CI gates: **4 tests**; profile verifier: **9 tests** (normal and optimized
+  Python); installer rollback/draft selection: **5 tests**; exact-document/PID mocks passed.
+  Actionlint and ShellCheck passed on the integrated source.
+- Local default Homebrew Python 3.14 has an unrelated pyexpat linker error;
+  `/usr/bin/python3` works. No host Python installation was changed.
+- Local host has Command Line Tools only: full Xcode app/package verification
+  has **not** been substituted by the standalone Swift checks.
+
+## Repository disclosure and settings
+
+The public-readiness review used a complete mirror (50 refs including PR refs,
+1644 reachable commits; gitleaks scanned 1593 non-merge changes, ~34 MB), avoiding
+an incomplete initial partial-clone scan that failed during lazy blob fetch.
+All branches/tags were included, ignoring no gitleaks suppressions.
+
+Three findings were reviewed: two deterministic crypto test-vector auth tags
+(`Cloud/test-vectors/vault-object-v1.json`, fixed 0x07 key/0x03 nonce) and a
+Hugging Face tokenizer `unk_token` field in generated code. No live credential
+was found. Reviewed PR metadata/content (14 PRs, 22 comments), all 7 available
+Actions logs (~3.27 MB, no scanner findings), documentation/configuration paths
+and screenshots (sample/readme content). No Actions artifacts, releases, wiki,
+or discussions existed at review time. The review found no private customer or
+business datasets. Redacted scan evidence is retained locally with mode-restricted
+working files; credentials/profile downloads are never repository artifacts.
+
+Repository is now public, Actions enabled, `main` requires a PR and strict
+`Release readiness`, resolved conversations, no force pushes/deletion, enforced
+for admins. `release` environment limits deployment to protected branches,
+requires the owner review, and disables admin bypass. Signing workflows
+additionally restrict the dispatch ref to `main` and exact successful main CI.
+
+## Production provisioning configuration
+
+The existing App Group `group.art.apuch.ksamint-markedit` is now associated with
+main App, Capture Helper, Finder Extension and Quick Actions under the existing
+Team `A64LJ32AZT`. Four new `MAC_APP_DIRECT` profiles named with suffix `2.5.6`
+were generated and decoded locally. All are ACTIVE, explicitly authorize that
+App Group, match the existing Developer ID certificate, and expire on
+2031-08-12. Preview keeps its existing profile because it does not use the group.
+Bundle IDs, Team ID, keychain group and data locations remain unchanged.
+
+The seven signing/notarization secrets are configured in the protected `release`
+environment from the existing controlled credential source. No new signing
+identity was created. Downloaded profiles and credentials remain outside the
+repository. This configuration evidence does not replace verification of the
+final signed bundle or real permission persistence tests.
+
+## Required signed runtime acceptance — all pending
+
+Use dedicated documents in an isolated test workspace/account. Never edit the
+frontmost document by assumption. Save `.xcresult`, sanitized logs, crash
+summaries, final SHA256s and exact component identities.
+
+- 30 open/edit/save/quit/restore cycles; recent files, restored windows, unsaved
+  drafts, autosave, Save As, Save All. Compare saved bytes and crash-report times.
+- Agent cancellation, process exit and peer disconnect; large stdout AND stderr
+  ZIP/TAR listings; corrupt HTML; failed writes; temporarily unavailable volumes.
+- Existing grant, 10 quit/relaunch cycles, logout/login, two full system reboots,
+  same-production-identity upgrade. User schedules real reboots; never automate
+  them on the working Mac. Valid grants must not prompt again.
+- Existing text, drafts, clipboard history, labels, pins, attachments and encrypted
+  data survive; note switching, Undo, >200 KB payloads, failed sync and conflicts.
+- Verify source and final signed entitlements/profile authorization for existing
+  App Group on main, Helper, Finder and Quick Action. Do not rename containers,
+  reset TCC, request Full Disk Access, or click permission dialogs automatically.
+- Exact same Xcode 26.6 Universal artifact runs on macOS 15 and 26, remains healthy
+  for at least 24 hours, and passes Gatekeeper/notarization/staple/signature checks.
+- Back up App/data with restrictive permissions; quit normally; defer replacing
+  the App if unsaved documents remain. Roll back App only, keep new user data.
+
+The finalizer only publishes hashes approved in a protected-main
+`docs/release-acceptance/v2.5.6.json` record. Until all pending rows are evidenced,
+**do not state that crashes or repeated authorization are solved in production**.

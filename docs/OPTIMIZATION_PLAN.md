@@ -14,23 +14,23 @@ need a runtime measurement first.
 - Keep each fix minimal and local. Do not widen scope, do not refactor
   unrelated code, do not change user-visible defaults without an issue.
 - Prove before pushing. Run the checks in section 5 for every package you
-  touch. Swift changes must compile in Xcode 26.5 or newer on macOS 15 or
+  touch. Swift changes must compile in Xcode 26.6 on macOS 15 or
   newer; there is no Swift toolchain on Linux CI, so a Linux-only agent must
   hand the Swift build step to a macOS runner or a human (see section 6).
 - Never skip, disable, or quarantine a test to get green.
 - Add a regression test for every correctness fix. Performance fixes get a
   measurement in the PR description (before and after, same input).
 
-## 1. Already landed (branch `claude/dazzling-planck-p4jeus`)
+## 1. Integrated source baseline (not proof of installation)
 
 Crashes and hangs:
 - SIGPIPE ignored at launch; `SO_NOSIGPIPE` on local MCP sockets.
 - `EditorDocument.canConcurrentlyReadDocuments` returns `false` (main-actor
   overrides trapped on AppKit's document-opening queue).
 - Local MCP accept loop and connections run on dedicated threads; agent CLI
-  output is read with `FileHandle.bytes.lines`. Blocking reads no longer pin
+  output is drained on dedicated I/O threads. Blocking reads no longer pin
   cooperative-pool threads.
-- Archive listing drains stdout before `waitUntilExit`.
+- Archive listing drains stdout and stderr concurrently, with bounded output and a timeout.
 
 Data loss:
 - Vault CBOR encoder uses a growable buffer (was `push(...bytes)`, stack
@@ -74,7 +74,7 @@ Each item: where, what, fix, how to verify. Do them in this order.
   block-cache test (same output as a full render after an edit in the
   middle). Measure with a 350 KB fixture before and after.
 
-### P2. Edits typed during a sync are overwritten
+### P2. Edits typed during a sync are overwritten — implemented for 2.5.6
 - Where: `WebApp/src/App.tsx` around the sync handler (`setFiles(synchronized)`
   after `flushPendingEdit()` and the network round trip).
 - What: the selected note's content captured at click time replaces whatever
@@ -134,7 +134,7 @@ Each item: where, what, fix, how to verify. Do them in this order.
   trimmed, so this grows without bound.
 - Fix: track changed item IDs since the last reconcile and write only those,
   or compare against a stored `(id, capturedAt, tagIDs, isPinned)`
-  fingerprint. Add a retention cap for permanent items with a setting.
+  fingerprint. Do not add automatic deletion or retention caps for permanent clipboard records.
 - Verify: `Scripts/ClipboardHistoryStoreTestMain.swift` (extend it); time
   `reconcile` with 2,000 permanent items.
 
@@ -143,8 +143,8 @@ Each item: where, what, fix, how to verify. Do them in this order.
   `rebuildItemIndex`).
 - What: `var candidate = items` copies up to 10,000 structs, then
   `rebuildItemIndex` and a `filter(...).count` walk them all, on every copy.
-- Fix: mutate in place, update `itemPositions` for the touched index only,
-  maintain `recentItemCount` incrementally.
+- Fix: first measure; preserve the existing write-failure rollback/data protection,
+  then update only the affected item index if justified.
 - Verify: same test harness as P6; measure `record` with 10,000 items.
 
 ### P8. Search hot path still re-folds candidates per query
@@ -186,14 +186,37 @@ Each item: where, what, fix, how to verify. Do them in this order.
   for the Agent panel: now cheap because rebuilds are incremental. If
   contention shows up (`SQLITE_BUSY` in logs), pass the session's index in.
 
-## 4. CI gap to close first
+## 4. Stability release 2.5.6 (19)
 
-`.github/workflows/build-and-test.yml` targets a self-hosted Linux runner
-with labels `apuch-ci, nanjing, kmd01`. No run has ever executed; only
-Dependabot jobs have. Either bring that runner online or temporarily switch
-the Linux jobs to `ubuntu-latest` so PRs get the TypeScript and Rust
-signal. The macOS jobs only run via `workflow_dispatch` with
-`full_compatibility=true`; dispatch it for any PR that touches Swift.
+Development and release repository: `ksamint/kmd01`. The integration branch
+`codex/stabilize-2.5.6` includes PR #14, the four installed-only fixes
+(4ecbf6c, 05a1f10, 0d388e1, 40bac91), and the previously uncommitted bookmark
+entitlements / manifest cleanup patches. Original worktrees remain intact.
+
+The actual installed baseline is still **2.5.5 (18), 40bac9139f371e808cc861480a7afe65d109f6d7**.
+“Implemented”, “tested”, and “installed” are separate states. No candidate is
+accepted until the signed runtime matrix and 24-hour observation are complete.
+
+CI uses `ubuntu-24.04`; relevant Mac/shared/config/script/workflow changes
+select macOS 26 / Xcode 26.6 and macOS 15 / Xcode 26.3 automatically.
+Pushes to main and manual dispatch run all checks. `Release readiness` always
+runs and fails for missing, cancelled, failed, or unexpectedly skipped jobs.
+The same macOS 26 Universal build is exercised on macOS 15 ARM64 and Intel.
+Unsigned/ad hoc CI runtime is isolated and does not prove grant persistence.
+PR jobs have no signing credentials. Signing requires protected main, an exact
+commit, and successful full main CI for that commit.
+
+The local macOS host has Command Line Tools only. Standalone Swift compilation
+is useful evidence but does not replace the full app/Swift-package Xcode tests.
+
+Current source changes include serialized sync writes, a visible read-only
+sync interval, retained failed pending edits, network cancellation/deadline,
+manifest-before-orphan cleanup, document lifecycle isolation, concurrent archive
+pipe draining, bounded MCP shutdown, and Agent cancellation/process cleanup.
+Persistent authorization additionally requires Apple-issued App Group profiles
+and correct cross-process transfer; copying app-scoped bookmarks is insufficient.
+
+See [the acceptance ledger](STABILITY_2.5.6.md) for actual evidence and blockers.
 
 ## 5. Verification commands
 
@@ -216,7 +239,7 @@ node Scripts/validate-localizations.mjs && node Scripts/validate-product-identit
 # Cloud (Rust)
 cd Cloud && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 
-# Mac app (macOS with Xcode 26.5+ only)
+# Mac app (macOS with Xcode 26.6; compatibility with Xcode 26.3)
 xcodebuild build -project MarkEdit.xcodeproj -scheme MarkEditMac -destination 'platform=macOS' \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 swift test --package-path MarkEditKit
@@ -238,32 +261,46 @@ Smoke checks on a built app, in this order:
 7. Web PWA: edit note A, open note B, press Undo; B must be unchanged.
 8. Web PWA: sync a note over 200 KB; it must upload.
 
-## 6. Deploy
+## 6. Signed candidate and release
 
-Development artifact (ad hoc signed, for testers):
-1. Merge to `main`.
-2. Dispatch `build-local-development.yml` with the exact commit SHA, or run
-   `Scripts/install-development-local.sh --ref <sha>` on a Mac with `gh`.
+1. Merge the integration PR only after all required checks pass. Keep all
+   production identifiers, Team ID, App Group and keychain group unchanged.
+2. Use the `release` environment on protected main. Generate a Developer ID
+   profile for each component; four profiles must explicitly authorize the
+   existing `group.art.apuch.ksamint-markedit` group. Validate final signed
+   entitlements, profile expiry, bundle identities, nested SHA, version and
+   architecture with `Scripts/verify-release-app.sh`.
+3. Formal builds use Xcode 26.6 and Universal architecture. Preserve the 6 MiB
+   DMG size gate; do not silently weaken it if the first Universal build fails.
+4. Sign, notarize, staple, and verify the candidate. Keep a draft until runtime
+   acceptance is complete. `finalize-release.yml` no longer publishes solely
+   because notarization is accepted.
+5. Test in an isolated account/workspace first. Back up the installed App and
+   necessary data with restricted permissions; request normal quit, and defer
+   installation if any unsaved document keeps the App running. This Mac runs
+   only the production signed `/Applications/kmd.app`.
+6. Record exact artifact SHA256s, commit, evidence, 30 lifecycle cycles, 10
+   quit/relaunch cycles, logout/login, two full user-arranged reboots, same-
+   identity upgrade and at least 24 hours of use on macOS 15 and 26 in
+   `docs/release-acceptance/v2.5.6.json`. Use schema 1 with `approved`, `reviewer`,
+   `commit`, `artifacts` (all four final asset basename/hash pairs), and `systems`
+   entries required by `Scripts/ci-release-gates.py`. Do not fabricate a record
+   or automatically reboot the user's Mac.
+7. Merge the evidence/acceptance record through the protected PR process.
+   Finalize publishes the accepted exact bytes and updates the cask only after
+   the record passes. No rebuild may substitute a different artifact.
+8. On regression, stop promotion and restore the previous App, preserving new
+   user data and diagnostic evidence. Never overwrite new databases with an old
+   backup as an application rollback.
 
-Signed release:
-1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `Build.xcconfig`
-   and the matching `version` fields in `CoreEditor`, `WebApp`,
-   `VaultProtocolTS`, `AgentSDK`, `ResourceModules`, and the Cloud crates;
-   `node Scripts/validate-product-identity.mjs` must pass.
-2. Tag `vX.Y.Z` on `main` after review.
-3. Dispatch `release.yml` with the tag (signs, notarizes, uploads a draft).
-4. `finalize-release.yml` publishes once notarization is accepted; dispatch
-   it manually with the tag if the scheduled run has not picked it up.
-5. Update the Homebrew cask with `Scripts/render-cask.rb` and verify the
-   installed app with `Scripts/verify-release-app.sh`.
-
-Cloud service: `Cloud/README.md` holds the deployment files; run the Rust
-checks above and `docker compose -f Cloud/docker-compose.tencent.yml config`
-with the production environment before rolling out.
+No public API, file-format or encryption-format changes, and no data migration.
+Performance P1 and P3–P10 remain future work; P9/P10 require reproduction first.
 
 ## 7. Definition of done
 
-- All commands in section 5 pass on the final commit, including the Xcode
-  build and Modules tests on macOS.
-- Each P-item has a measurement or a regression test in its PR.
-- The development artifact passes the eight smoke checks.
+- Full exact-commit CI, including both Xcode versions, passes.
+- The production signed candidate passes every runtime/authorization/data
+  scenario in the acceptance ledger; no new main/helper crash reports occur.
+- SHA256, nested signing identities/profiles, architecture, Gatekeeper,
+  notarization and staple evidence is saved and matches the published bytes.
+- “Repeated authorization solved” is not recorded before the reboot matrix.
