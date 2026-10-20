@@ -156,4 +156,12 @@ shared_source ||= shared_group.new_file('WorkspaceBookmarkAccess.swift')
   end
 end
 
+# Opt-in CI signing profiles remain empty for ordinary development builds.
+%w[MarkEditMac ConversationCaptureHelper FinderExtension PreviewExtension QuickActionExtension].each do |name|
+  target = project.targets.find { |candidate| candidate.name == name } or abort "#{name} target missing"
+  target.build_configurations.each do |configuration|
+    configuration.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = "$(KSAMINT_PROFILE_#{name})"
+  end
+end
+
 project.save

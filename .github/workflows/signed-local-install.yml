@@ -148,8 +148,6 @@ jobs:
           unset token
       - name: Archive signed app
         run: |
-          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
           test '${{ inputs.architecture }}' = arm64
           xcodebuild archive \
             -project MarkEdit.xcodeproj \
@@ -157,10 +155,8 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/ksamint.xcarchive" \
             -destination 'generic/platform=macOS' \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$key" \
-            -authenticationKeyID "$APPLE_NOTARY_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_NOTARY_ISSUER_ID" \
+            -xcconfig ReleaseSigning.xcconfig \
+            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID_SHA1" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             KSAMINT_BUILD_COMMIT='${{ needs.preflight.outputs.commit }}' \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID"

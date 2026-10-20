@@ -1339,6 +1339,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ConversationCaptureHelper/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_ConversationCaptureHelper)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 19;
@@ -1363,6 +1364,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ConversationCaptureHelper/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_ConversationCaptureHelper)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 19;
@@ -1527,6 +1529,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(MARKEDITMAC_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_MarkEditMac)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1564,6 +1567,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "$(MARKEDITMAC_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_MarkEditMac)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1598,6 +1602,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FinderExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_FinderExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1644,6 +1649,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FinderExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_FinderExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1689,6 +1695,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = "$(PREVIEWEXTENSION_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_PreviewExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(inherited)";
@@ -1720,6 +1727,7 @@
 			baseConfigurationReference = 8743B26229593B2000F83DAE /* Build.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = "$(PREVIEWEXTENSION_ENTITLEMENTS)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_PreviewExtension)";
 				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(inherited)";
@@ -1751,6 +1759,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = QuickActionExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_QuickActionExtension)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1771,6 +1780,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = QuickActionExtension/Info.entitlements;
+				PROVISIONING_PROFILE_SPECIFIER = "$(KSAMINT_PROFILE_QuickActionExtension)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 19;
 				ENABLE_HARDENED_RUNTIME = YES;

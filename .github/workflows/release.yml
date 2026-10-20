@@ -210,8 +210,6 @@ jobs:
 
       - name: Archive and export Universal app
         run: |
-          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
           commit="$(git rev-parse HEAD)"
           xcodebuild archive \
             -project MarkEdit.xcodeproj \
@@ -219,10 +217,8 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/ksamint-MarkEdit.xcarchive" \
             -destination 'generic/platform=macOS' \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$key" \
-            -authenticationKeyID "$APPLE_NOTARY_KEY_ID" \
-            -authenticationKeyIssuerID "$APPLE_NOTARY_ISSUER_ID" \
+            -xcconfig ReleaseSigning.xcconfig \
+            CODE_SIGN_IDENTITY="$APPLE_DEVELOPER_ID_SHA1" \
             ARCHS="arm64 x86_64" VALID_ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
             KSAMINT_BUILD_COMMIT="$commit" \
