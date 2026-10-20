@@ -498,9 +498,11 @@ private enum SharedCaptureSettings {
   private static let workspace = UserDefaults(suiteName: appGroup)
     .map { WorkspaceBookmarkReceiver(shared: $0) }
   static var workspaceURL: URL? { workspace?.acquire() }
+
   static func refreshWorkspaceGrant() {
     if let url = workspaceURL { url.stopAccessingSecurityScopedResource() }
   }
+
   static var pendingDirectory: URL? {
     ClipboardStorageEnvironment.sharedRootURL
       .appending(path: "ConversationInbox/Pending", directoryHint: .isDirectory)

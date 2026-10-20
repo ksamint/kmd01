@@ -17,8 +17,10 @@ final class FinderTools: FIFinderSync {
   override init() {
     super.init()
     DistributedNotificationCenter.default().addObserver(
-      self, selector: #selector(refreshWorkspaceGrant),
-      name: WorkspaceBookmarkNotifications.changed, object: nil
+      self,
+      selector: #selector(refreshWorkspaceGrant),
+      name: WorkspaceBookmarkNotifications.changed,
+      object: nil
     )
     refreshWorkspaceGrant()
     DistributedNotificationCenter.default().post(name: WorkspaceBookmarkNotifications.requested, object: nil)

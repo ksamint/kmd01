@@ -276,7 +276,8 @@ private extension AppDelegate {
         if let list = saved.decodeToDataArray() {
           AppPreferences.General.grantedFolderBookmark = list.map {
             $0 == bookmarkData ? refreshed : $0
-          }.encodeToData()
+          }
+          .encodeToData()
         } else if saved == bookmarkData {
           AppPreferences.General.grantedFolderBookmark = refreshed
         }

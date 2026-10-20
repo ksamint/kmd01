@@ -86,11 +86,18 @@ import UniformTypeIdentifiers
       pendingRequestID = request.id
       pendingRequestURL = directory.appending(path: "\(request.id).json")
       DistributedNotificationCenter.default().addObserver(
-        self, selector: #selector(handoffReceived(_:)),
-        name: WorkspaceBookmarkNotifications.quickActionReceived, object: request.id.uuidString
+        self,
+        selector: #selector(handoffReceived(_:)),
+        name: WorkspaceBookmarkNotifications.quickActionReceived,
+        object: request.id.uuidString
       )
-      handoffTimeout = Timer.scheduledTimer(timeInterval: 30, target: self,
-        selector: #selector(handoffExpired), userInfo: nil, repeats: false)
+      handoffTimeout = Timer.scheduledTimer(
+        timeInterval: 30,
+        target: self,
+        selector: #selector(handoffExpired),
+        userInfo: nil,
+        repeats: false
+      )
       guard NSWorkspace.shared.open(callbackURL) else {
         finishHandoff(error: CocoaError(.fileReadNoPermission))
         return
