@@ -145,12 +145,11 @@ export async function saveVaultSyncState(
 ): Promise<void> {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const request = database
-      .transaction(STORE_NAME, 'readwrite')
-      .objectStore(STORE_NAME)
-      .put(state, `sync:${workspaceId}`);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ?? new Error('Sync state transaction aborted'));
+    transaction.objectStore(STORE_NAME).put(state, `sync:${workspaceId}`);
   });
 }
 

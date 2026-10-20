@@ -76,6 +76,7 @@ const DeepSearchPanel = lazy(() => import('./search/DeepSearchPanel').then(modul
 
 export default function App() {
   const [storage, setStorage] = useState<VaultStorage>();
+  const mounted = useRef(true);
   const [files, setFiles] = useState<NoteFile[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [route, setRoute] = useState<Route>('hub');
@@ -91,6 +92,8 @@ export default function App() {
     accountFeatureEnabled || localStorage.getItem('ksamint-cloud-enabled') === 'true',
   );
   const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
+  const activeMutations = useRef(0);
   const [importing, setImporting] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
   const [conflictManagerOpen, setConflictManagerOpen] = useState(false);
@@ -105,6 +108,7 @@ export default function App() {
   const [backupOpen, setBackupOpen] = useState(false);
   const conversationInbox = useRef<ConversationInboxModule | undefined>(undefined);
   const pendingFileSave = useRef<PendingFileSave<NoteFile> | undefined>(undefined);
+  const activeStorage = useRef<VaultStorage | undefined>(undefined);
   const openFileRequest = useRef(0);
   const selected = files.find(file => file.id === selectedId);
   const graph = useMemo(() => buildGraph(files), [files]);
@@ -114,6 +118,11 @@ export default function App() {
     () => (sidebar === 'search' ? searchNotes(files, query) : []),
     [files, query, sidebar],
   );
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -163,16 +172,31 @@ export default function App() {
       error => setNotice(error instanceof Error ? error.message : String(error)),
     );
     pendingFileSave.current = coordinator;
+    activeStorage.current = storage;
     return () => {
       if (pendingFileSave.current === coordinator) pendingFileSave.current = undefined;
+      if (activeStorage.current === storage) activeStorage.current = undefined;
+      queueMicrotask(() => {
+        // StrictMode immediately reattaches the same storage after its cleanup probe.
+        if (activeStorage.current === storage) return;
+        void coordinator.flush().finally(() => storage.close()).catch(error => {
+          setNotice(error instanceof Error ? error.message : String(error));
+        });
+      });
     };
   }, [storage]);
 
   async function continueOffline() {
+    let opened: VaultStorage | undefined;
     try {
-      const opened = await VaultStorage.open();
-      const loaded = await Promise.all(opened.listFiles().map(file => opened.readFile(file.id)));
+      opened = await VaultStorage.open();
+      const current = opened;
+      const loaded = await Promise.all(current.listFiles().map(file => current.readFile(file.id)));
       const conflictHistory = await opened.listConflicts();
+      if (!mounted.current) {
+        await opened.close();
+        return;
+      }
       setStorage(opened);
       setFiles(loaded);
       setConflicts(conflictHistory);
@@ -180,6 +204,7 @@ export default function App() {
       setRoute(loaded.length ? 'editor' : 'hub');
       setNotice(undefined);
     } catch (error) {
+      await opened?.close();
       if (
         error instanceof Error
         && error.name === 'VaultRecoverySetupRequiredError'
@@ -202,28 +227,49 @@ export default function App() {
     }
   }
 
+  function workspaceMutation<Arguments extends unknown[]>(
+    operation: (...args: Arguments) => Promise<void>,
+  ) {
+    return async (...args: Arguments) => {
+      if (syncingRef.current) return;
+      activeMutations.current += 1;
+      try {
+        await operation(...args);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        activeMutations.current -= 1;
+      }
+    };
+  }
+
   async function syncNow() {
-    if (!storage || syncing) {
+    if (!storage || syncingRef.current) {
       return;
     }
+    if (activeMutations.current) {
+      setNotice(t('saving'));
+      return;
+    }
+    syncingRef.current = true;
     setSyncing(true);
+    let snapshotStarted = false;
     try {
       await flushPendingEdit();
-      const { syncWorkspaceToPrivateCloud } = await import('./security/VaultSyncClient');
-      const attachments = await Promise.all(
-        storage.listAllFiles()
-          .filter(file => file.kind === 'attachment')
-          .map(file => storage.readAttachment(file.id)),
+      const { report, files: synchronized, conflicts: conflictHistory } = await storage.synchronize(
+        async (snapshot, signal) => {
+          snapshotStarted = true;
+          const { syncWorkspaceToPrivateCloud } = await import('./security/VaultSyncClient');
+          signal.throwIfAborted();
+          return syncWorkspaceToPrivateCloud({
+            workspaceId: storage.workspace().id,
+            workspaceName: storage.workspace().name,
+            ...snapshot,
+            signal,
+          });
+        },
       );
-      const report = await syncWorkspaceToPrivateCloud({
-        workspaceId: storage.workspace().id,
-        workspaceName: storage.workspace().name,
-        files,
-        attachments,
-      });
-      const synchronized = await storage.replaceFiles(report.files);
-      await storage.replaceAttachments(report.attachments);
-      const conflictHistory = await storage.appendConflicts(report.conflictRecords);
       setFiles(synchronized);
       setConflicts(conflictHistory);
       setSelectedId(current => (
@@ -236,8 +282,20 @@ export default function App() {
         + (report.conflicts ? ` · ${report.conflicts} ${t('syncConflicts')}` : ''),
       );
     } catch (error) {
+      if (snapshotStarted) {
+        // A local commit can fail after some files were saved; show the stored text.
+        try {
+          const loaded = await Promise.all(storage.listFiles().map(file => storage.readFile(file.id)));
+          setFiles(loaded);
+          setSelectedId(current => loaded.some(file => file.id === current) ? current : loaded[0]?.id);
+          setConflicts(await storage.listConflicts());
+        } catch {
+          // Keep the visible text if storage itself is unavailable.
+        }
+      }
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
+      syncingRef.current = false;
       setSyncing(false);
     }
   }
@@ -250,7 +308,7 @@ export default function App() {
     setRoute('editor');
   }
 
-  async function restoreBackupChoices(choices: BackupRestoreChoice[]) {
+  const restoreBackupChoices = workspaceMutation(async (choices: BackupRestoreChoice[]) => {
     if (!storage) return;
     await flushPendingEdit();
     setSaving(true);
@@ -283,14 +341,14 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }
+  });
 
   async function flushPendingEdit() {
     await pendingFileSave.current?.flush();
   }
 
   function changeContent(content: string) {
-    if (!selected || !storage) {
+    if (!selected || !storage || syncingRef.current) {
       return;
     }
     setFiles(current => current.map(file => (
@@ -301,7 +359,7 @@ export default function App() {
     pendingFileSave.current?.queue(selected.id, content);
   }
 
-  async function createNote() {
+  const createNote = workspaceMutation(async () => {
     if (!storage) {
       return;
     }
@@ -313,9 +371,9 @@ export default function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }
+  });
 
-  async function importSources(sources: File[]) {
+  const importSources = workspaceMutation(async (sources: File[]) => {
     if (!storage || !sources.length || importing) {
       return;
     }
@@ -341,7 +399,7 @@ export default function App() {
     } finally {
       setImporting(false);
     }
-  }
+  });
 
   function chooseImport(kind: 'files' | 'folder') {
     const input = document.createElement('input');
@@ -356,7 +414,7 @@ export default function App() {
     input.click();
   }
 
-  async function importURL(url: string) {
+  const importURL = workspaceMutation(async (url: string) => {
     if (!storage || importing) {
       return;
     }
@@ -375,9 +433,9 @@ export default function App() {
     } finally {
       setImporting(false);
     }
-  }
+  });
 
-  async function planConversationImport(sources: ConversationImportSource[]) {
+  const planConversationImport = workspaceMutation(async (sources: ConversationImportSource[]) => {
     if (!storage || !sources.length || importing) return;
     setImporting(true);
     try {
@@ -397,7 +455,7 @@ export default function App() {
     } finally {
       setImporting(false);
     }
-  }
+  });
 
   function chooseConversationImport(kind: 'files' | 'folder' = 'files') {
     const input = document.createElement('input');
@@ -440,7 +498,7 @@ export default function App() {
     }
   }
 
-  async function applyConversationImport(decisions: ConversationImportDecision[]) {
+  const applyConversationImport = workspaceMutation(async (decisions: ConversationImportDecision[]) => {
     if (!storage || !conversationPlan || !conversationInbox.current) return;
     await flushPendingEdit();
     const report = await conversationInbox.current.apply(conversationPlan, decisions);
@@ -453,9 +511,9 @@ export default function App() {
       setRoute('editor');
     }
     setNotice(`${report.created} ${t('conversationNew')} · ${report.updated} ${t('conversationUpdates')} · ${report.skipped} ${t('conversationDuplicates')}`);
-  }
+  });
 
-  async function undoConversationImport() {
+  const undoConversationImport = workspaceMutation(async () => {
     if (!storage || !conversationUndo || !conversationInbox.current) return;
     await flushPendingEdit();
     await conversationInbox.current.undo(conversationUndo);
@@ -464,13 +522,13 @@ export default function App() {
     setSelectedId(current => current && loaded.some(file => file.id === current) ? current : loaded[0]?.id);
     setConversationUndo(undefined);
     setNotice(t('conversationUndoComplete'));
-  }
+  });
 
-  async function resolveConflict(
+  const resolveConflict = workspaceMutation(async (
     record: ConflictRecord,
     content: string,
     strategy: ConflictResolution['strategy'],
-  ) {
+  ) => {
     if (!storage) {
       return;
     }
@@ -489,9 +547,9 @@ export default function App() {
     });
     setConflicts(history);
     setNotice(t('conflictResolved'));
-  }
+  });
 
-  async function addTag(tag: string) {
+  const addTag = workspaceMutation(async (tag: string) => {
     if (!storage || !selected || !tag.trim()) {
       return;
     }
@@ -502,9 +560,9 @@ export default function App() {
       tags,
     });
     setFiles(current => current.map(file => file.id === updated.id ? updated : file));
-  }
+  });
 
-  async function removeTag(tag: string) {
+  const removeTag = workspaceMutation(async (tag: string) => {
     if (!storage || !selected) {
       return;
     }
@@ -515,9 +573,9 @@ export default function App() {
       tags: selected.metadata.tags.filter(value => canonicalTag(value) !== identity),
     });
     setFiles(current => current.map(file => file.id === updated.id ? updated : file));
-  }
+  });
 
-  async function setCategory(fileId: string, category?: string) {
+  const setCategory = workspaceMutation(async (fileId: string, category?: string) => {
     if (!storage) {
       return;
     }
@@ -531,16 +589,16 @@ export default function App() {
       category: category?.trim() || undefined,
     });
     setFiles(current => current.map(value => value.id === updated.id ? updated : value));
-  }
+  });
 
-  async function applyTaxonomyAction(
+  const applyTaxonomyAction = workspaceMutation(async (
     kind: TaxonomyKind,
     action: TaxonomyAction,
     source: string,
     target: string,
     signal: AbortSignal,
     onProgress: (completed: number, total: number) => void,
-  ) {
+  ) => {
     if (!storage) {
       return;
     }
@@ -587,9 +645,9 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }
+  });
 
-  async function undoTaxonomyAction() {
+  const undoTaxonomyAction = workspaceMutation(async () => {
     if (!storage || !taxonomyUndo) {
       return;
     }
@@ -606,7 +664,7 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }
+  });
 
   function previewReplace(options: ReplaceOptions, scope: ReplaceScope) {
     try {
@@ -622,7 +680,7 @@ export default function App() {
     }
   }
 
-  async function applyReplace(plan: WorkspaceReplacePlan, selectedFileIds: string[]) {
+  const applyReplace = workspaceMutation(async (plan: WorkspaceReplacePlan, selectedFileIds: string[]) => {
     if (!storage || !selectedFileIds.length) return;
     await flushPendingEdit();
     const selectedIds = new Set(selectedFileIds);
@@ -656,9 +714,9 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }
+  });
 
-  async function undoReplace() {
+  const undoReplace = workspaceMutation(async () => {
     if (!storage || !replaceUndo) return;
     await flushPendingEdit();
     const restored: NoteFile[] = [];
@@ -674,7 +732,7 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }
+  });
 
   if (!storage) {
     return (
@@ -729,7 +787,7 @@ export default function App() {
           <small>{t('localEncrypted')}</small>
         </button>
         <div className="topbar-spacer" />
-        <span className="save-indicator" role="status">{saving ? t('saving') : t('saveState')}</span>
+        <span className="save-indicator" role="status">{syncing ? t('syncReadOnly') : saving ? t('saving') : t('saveState')}</span>
         {cloudEnabled && (
           <button className="quiet-button" type="button" disabled={syncing} onClick={syncNow}>
             {syncing ? t('syncing') : t('syncNow')}
@@ -757,6 +815,7 @@ export default function App() {
 
       <div
         className="workspace-layout"
+        inert={syncing}
         onDragOver={event => {
           if (event.dataTransfer.types.includes('Files')) {
             event.preventDefault();
@@ -866,7 +925,7 @@ export default function App() {
                     />
                   </header>
                   <Suspense fallback={<RouteLoading />}>
-                    <CoreEditor key={selected.id} value={selected.content} onChange={changeContent} />
+                    <CoreEditor key={selected.id} value={selected.content} readOnly={syncing} onChange={changeContent} />
                   </Suspense>
                 </>
               ) : (
@@ -882,79 +941,81 @@ export default function App() {
           <button type="button" onClick={() => setNotice(undefined)}>×</button>
         </div>
       )}
-      {taxonomyUndo && (
-        <button className="undo-toast" type="button" onClick={undoTaxonomyAction}>
-          {t('undo')} · {taxonomyUndo.length} {t('affectedFiles').toLocaleLowerCase()}
-        </button>
-      )}
-      {conversationUndo && (
-        <button className="undo-toast conversation-undo" type="button" onClick={() => void undoConversationImport()}>
-          {t('undo')} · {t('conversationImport')}
-        </button>
-      )}
-      {replaceUndo && (
-        <button className="undo-toast replace-undo" type="button" onClick={() => void undoReplace()}>
-          {t('undo')} · {t('replace')}
-        </button>
-      )}
-      {tagManagerOpen && (
-        <TagManagerDialog
-          files={files}
-          onClose={() => setTagManagerOpen(false)}
-          onApply={applyTaxonomyAction}
-        />
-      )}
-      {conflictManagerOpen && (
-        <ConflictManagerDialog
-          records={conflicts}
-          onClose={() => setConflictManagerOpen(false)}
-          onResolve={resolveConflict}
-        />
-      )}
-      {conversationPlan && (
-        <Suspense fallback={<RouteLoading />}>
-          <ConversationImportDialog
-            plan={conversationPlan}
-            onClose={() => setConversationPlan(undefined)}
-            onApply={applyConversationImport}
+      <div inert={syncing}>
+        {taxonomyUndo && (
+          <button className="undo-toast" type="button" onClick={undoTaxonomyAction}>
+            {t('undo')} · {taxonomyUndo.length} {t('affectedFiles').toLocaleLowerCase()}
+          </button>
+        )}
+        {conversationUndo && (
+          <button className="undo-toast conversation-undo" type="button" onClick={() => void undoConversationImport()}>
+            {t('undo')} · {t('conversationImport')}
+          </button>
+        )}
+        {replaceUndo && (
+          <button className="undo-toast replace-undo" type="button" onClick={() => void undoReplace()}>
+            {t('undo')} · {t('replace')}
+          </button>
+        )}
+        {tagManagerOpen && (
+          <TagManagerDialog
+            files={files}
+            onClose={() => setTagManagerOpen(false)}
+            onApply={applyTaxonomyAction}
           />
-        </Suspense>
-      )}
-      {replacePlan && (
-        <ReplacePreviewDialog
-          key={`${replacePlan.scope}-${replacePlan.occurrenceCount}-${replacePlan.options.replacement}`}
-          plan={replacePlan}
-          onClose={() => setReplacePlan(undefined)}
-          onApply={selectedIds => void applyReplace(replacePlan, selectedIds)}
-        />
-      )}
-      {recoverySetup && (
-        <VaultRecoveryDialog
-          workspaceId={storage.workspace().id}
-          deviceToken={recoverySetup.deviceToken}
-          recoveryPackage={recoverySetup.recoveryPackage}
-          challenge={recoverySetup.challenge}
-          onClose={() => setRecoverySetup(undefined)}
-          onConfigured={() => {
-            setRecoverySetup(undefined);
-            void syncNow();
-          }}
-        />
-      )}
-      {devicesOpen && (
-        <VaultDevicesDialog
-          workspaceId={storage.workspace().id}
-          onClose={() => setDevicesOpen(false)}
-        />
-      )}
-      {backupOpen && (
-        <BackupHistoryDialog
-          workspaceId={storage.workspace().id}
-          files={files}
-          onClose={() => setBackupOpen(false)}
-          onRestore={restoreBackupChoices}
-        />
-      )}
+        )}
+        {conflictManagerOpen && (
+          <ConflictManagerDialog
+            records={conflicts}
+            onClose={() => setConflictManagerOpen(false)}
+            onResolve={resolveConflict}
+          />
+        )}
+        {conversationPlan && (
+          <Suspense fallback={<RouteLoading />}>
+            <ConversationImportDialog
+              plan={conversationPlan}
+              onClose={() => setConversationPlan(undefined)}
+              onApply={applyConversationImport}
+            />
+          </Suspense>
+        )}
+        {replacePlan && (
+          <ReplacePreviewDialog
+            key={`${replacePlan.scope}-${replacePlan.occurrenceCount}-${replacePlan.options.replacement}`}
+            plan={replacePlan}
+            onClose={() => setReplacePlan(undefined)}
+            onApply={selectedIds => void applyReplace(replacePlan, selectedIds)}
+          />
+        )}
+        {recoverySetup && (
+          <VaultRecoveryDialog
+            workspaceId={storage.workspace().id}
+            deviceToken={recoverySetup.deviceToken}
+            recoveryPackage={recoverySetup.recoveryPackage}
+            challenge={recoverySetup.challenge}
+            onClose={() => setRecoverySetup(undefined)}
+            onConfigured={() => {
+              setRecoverySetup(undefined);
+              void syncNow();
+            }}
+          />
+        )}
+        {devicesOpen && (
+          <VaultDevicesDialog
+            workspaceId={storage.workspace().id}
+            onClose={() => setDevicesOpen(false)}
+          />
+        )}
+        {backupOpen && (
+          <BackupHistoryDialog
+            workspaceId={storage.workspace().id}
+            files={files}
+            onClose={() => setBackupOpen(false)}
+            onRestore={restoreBackupChoices}
+          />
+        )}
+      </div>
     </div>
   );
 }
