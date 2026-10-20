@@ -34,6 +34,11 @@ $.NSWorkspace = { sharedWorkspace: { runningApplications: {
   count: processes.length, objectAtIndex: index => processes[index],
 } } };
 $.NSRunningApplication = { runningApplicationWithProcessIdentifier: pid => processes.find(item => item.processIdentifier === pid) };
+assert.equal(run(['running-production']), [
+  `101\t${extensionPath}\tart.apuch.ksamint.markedit.preview-extension`,
+  `102\t${extensionPath}\tart.apuch.ksamint.markedit.preview-extension`,
+].join('\n'));
+console.log('Production inventory retains both executing instances of an embedded extension.');
 run(['quit', extensionPath, '102']);
 assert.deepEqual(stopped, [102]);
 assert.throws(() => run(['quit', extensionPath, '999']));
