@@ -54,6 +54,16 @@ Local completed checks (record only actual completed results):
   `/usr/bin/python3` works. No host Python installation was changed.
 - Local host has Command Line Tools only: full Xcode app/package verification
   has **not** been substituted by the standalone Swift checks.
+- Hosted run `39414437185` passed all Linux jobs, including Cloud dependency
+  audit. Both Mac jobs passed clipboard/bookmark/transport harnesses, then failed
+  strict SwiftLint after the SQLite actor cleanup compile error was fixed.
+  Follow-up formatting/test-structure corrections pass the pinned SwiftLint
+  0.65.0 rules locally across all 319 Swift files; full Mac CI remains pending.
+- The manual `Signed candidate runtime` workflow verifies an existing stapled
+  draft's exact DMG hash, commit, signatures and profiles before running the
+  dedicated lifecycle test on fresh macOS 26 ARM and macOS 15 ARM/Intel runners.
+  Provenance regressions (3 tests), actionlint and ShellCheck passed. No candidate
+  exists yet, so signed runtime execution remains pending.
 
 ## Repository disclosure and settings
 
