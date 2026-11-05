@@ -1,7 +1,6 @@
 # kmd
 
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-0F4B42)](https://github.com/fengurt/ksa-MarkEdit/releases/latest)
-[![Build and test](https://github.com/fengurt/ksa-MarkEdit/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/fengurt/ksa-MarkEdit/actions/workflows/build-and-test.yml)
 
 kmd is a fast, native Markdown editor for macOS with first-class
 Simplified Chinese, Traditional Chinese, Japanese, and French interfaces.
@@ -47,9 +46,10 @@ open -a "kmd"
 Alternatively, download `ksamint-MarkEdit-<version>.dmg` from the
 [latest GitHub release](https://github.com/fengurt/ksa-MarkEdit/releases/latest).
 
-Pull requests also produce an ARM64, ad-hoc-signed development artifact.
-Download `ksamint-MarkEdit-development` from the successful GitHub Actions run,
-unzip it, and copy `kmd.app` into `~/Applications`.
+To try an unreleased commit, build and install the ARM64, ad-hoc-signed
+`kmd Dev` app on your Mac with `Scripts/install-development-local.sh --ref <commit>`
+(see [Local checks, installs, and releases](#local-checks-installs-and-releases)).
+It installs beside the formal app and never replaces `/Applications/kmd.app`.
 
 ## Local MCP
 
@@ -176,7 +176,8 @@ process; the server never receives plaintext searches or keys.
 ## Language review
 
 Every translatable catalog entry is validated for completeness and placeholder
-safety in CI. Japanese and French translations are published only after an
+safety by `Scripts/validate-localizations.mjs`, which the local checks and the
+release gate run. Japanese and French translations are published only after an
 explicit native-language review. Translation corrections are welcome through
 the [issue tracker](https://github.com/fengurt/ksa-MarkEdit/issues).
 
@@ -211,7 +212,7 @@ The project contains:
 - `AgentSDK`: remote read-only, client-side-decrypting Agent SDK
 - `FinderExtension` and `PreviewExtension`: native system integrations
 
-Use Node.js 22 and Xcode 26.5:
+Use Node.js 24.19 (see `.node-version`) and Xcode 26.5:
 
 ```sh
 cd CoreEditor
@@ -248,6 +249,46 @@ directory metadata or bounded byte ranges from the selected resource.
 Resource containers can be opened from File > Open Resource, the Recent
 Resources submenu, or by dropping a folder, archive, HTML, or OKF resource onto
 an editor window. Ordinary image and PDF drops retain their Markdown behavior.
+
+## Local checks, installs, and releases
+
+GitHub Actions and CI runners are retired. Checks, builds, installs, and
+releases run on a developer's Apple Silicon Mac, each for an exact commit, in a
+pristine worktree of that commit, starting from a clean working tree. Every
+gate records local evidence (commit and tree, each command, exit codes,
+timestamps, toolchain, and artifact SHA-256 digests) under the git-ignored
+`.local-evidence/<commit>/` directory, and each later gate refuses to run
+unless the gate before it passed for the same commit.
+
+| Script | Replaces | Evidence gates |
+| --- | --- | --- |
+| `Scripts/local-checks.sh [--ref REF] [--suite NAME,...]` | `build-and-test.yml` | `checks-<suite>` |
+| `Scripts/install-development-local.sh [--ref REF]` | `build-local-development.yml` | `development-build`, `development-install` |
+| `Scripts/install-latest-local.sh [--ref REF]` | `signed-local-install.yml` | `signed-local-build`, `signed-install` |
+| `Scripts/install-latest-local.sh --source release --tag vX.Y.Z` | | `signed-install` |
+| `Scripts/release-local.sh --tag vX.Y.Z` | `release.yml` | `release` (needs every `checks-<suite>`) |
+| `Scripts/finalize-release-local.sh --tag vX.Y.Z [--wait]` | `finalize-release.yml` | `finalize-release` (needs `release`) |
+
+The check suites are `resource-modules`, `agent-sdk`, `agent-contracts`,
+`cloud`, `web`, `mac`, and `compatibility`; the `mac` and `compatibility`
+suites need Xcode, and `cloud` needs Docker and `cargo-audit` 0.22.2.
+
+Signed builds read credentials only from the login keychain and the
+environment, and never write key material to disk or evidence:
+`APPLE_TEAM_ID`, a Developer ID Application identity in the keychain
+(`APPLE_DEVELOPER_ID_SHA1` picks one), and either a notarytool keychain
+profile (`KSAMINT_NOTARY_KEYCHAIN_PROFILE`) or an App Store Connect API key
+file (`APPLE_NOTARY_KEY_PATH`, `APPLE_NOTARY_KEY_ID`,
+`APPLE_NOTARY_ISSUER_ID`). `Scripts/lib/developer-id.sh` documents the
+details. Releases use your own `gh auth login` session and Homebrew tap
+access. A typical release:
+
+```sh
+git tag v2.5.5 && git push origin v2.5.5   # the release repository must have the tag
+Scripts/local-checks.sh --ref v2.5.5
+Scripts/release-local.sh --tag v2.5.5
+Scripts/finalize-release-local.sh --tag v2.5.5 --wait
+```
 
 ## Branding and license
 

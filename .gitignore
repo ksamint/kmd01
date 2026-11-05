@@ -16,3 +16,6 @@ WebApp/vite.config.d.ts
 WebApp/public/models/multilingual-e5-small/*.onnx
 WebApp/public/models/multilingual-e5-small/tokenizer.json
 WebApp/public/models/multilingual-e5-small/tokenizer_config.json
+
+## Local build, install, and release evidence (git-ignored)
+.local-evidence/
