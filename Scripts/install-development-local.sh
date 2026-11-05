@@ -1,80 +1,125 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+#
+# Builds the ARM64 "kmd Dev" app for an exact commit on this Mac and installs
+# it at /Applications/kmd Dev.app, leaving the formal /Applications/kmd.app
+# untouched.
+#
+# Replaces the retired build-local-development.yml workflow: the same commands
+# run in a pristine worktree of the commit, and the gates record local evidence
+# under .local-evidence/<commit>/ (development-build, development-install).
+# Installation refuses to start unless the build gate passed for the exact
+# commit and the candidate still matches the recorded digest.
+#
+# Usage: Scripts/install-development-local.sh [--ref REF]
+set -euo pipefail
 
-repository=fengurt/ksa-MarkEdit
 requested_ref=HEAD
-run_id=
-
+original_args=("$@")
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --ref) requested_ref=$2; shift 2 ;;
-    --run-id) run_id=$2; shift 2 ;;
-    --repo) repository=$2; shift 2 ;;
+    --ref) requested_ref=${2:?--ref needs a value}; shift 2 ;;
+    --run-id|--repo)
+      echo "$1 was removed: GitHub runners are retired and the app now builds locally." >&2
+      exit 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
-expected_commit=$(git -C "$root" rev-parse "$requested_ref^{commit}")
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=Scripts/lib/local-evidence.sh
+. "$script_dir/lib/local-evidence.sh"
+
+le_require_macos
+le_require_commands git jq node corepack xcodebuild ditto codesign lipo osascript shasum
+le_require_clean_tree
+expected_commit=$(le_resolve_commit "$requested_ref")
+
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/kmd-development-install.XXXXXX")
-cleanup() { rm -rf "$temporary"; }
-trap cleanup EXIT INT TERM
+source_dir="$temporary/src"
+derived_data="$temporary/DerivedData"
+archive="$temporary/kmd-development.zip"
+app="$derived_data/Build/Products/Debug/kmd.app"
+cleanup() {
+  local code=$?
+  le_on_exit "$code"
+  le_remove_checkout "$source_dir"
+  rm -rf "$temporary"
+  exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
-command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required." >&2; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "Sign in with gh auth login first." >&2; exit 1; }
+build_core_editor() {
+  cd "$source_dir/CoreEditor"
+  corepack yarn --version
+  corepack yarn install --immutable
+  corepack yarn build
+}
 
-if [ -z "$run_id" ]; then
-  gh workflow run build-local-development.yml \
-    --repo "$repository" \
-    --ref main \
-    -f ref="$expected_commit"
+build_app() {
+  cd "$source_dir"
+  xcodebuild build \
+    -project MarkEdit.xcodeproj \
+    -scheme MarkEditMac \
+    -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$derived_data" \
+    KSAMINT_BUILD_COMMIT="$expected_commit" \
+    CODE_SIGN_IDENTITY="" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO
+}
 
-  attempt=0
-  while [ "$attempt" -lt 120 ]; do
-    run_id=$(gh run list \
-      --repo "$repository" \
-      --workflow build-local-development.yml \
-      --limit 30 \
-      --json databaseId,displayTitle,status,conclusion \
-      --jq ".[] | select(.displayTitle == \"Development app $expected_commit\") | .databaseId" \
-      | head -1)
-    if [ -n "$run_id" ]; then
-      state=$(gh run view "$run_id" --repo "$repository" --json status,conclusion \
-        --jq '.status + ":" + (.conclusion // "")')
-      case "$state" in
-        completed:success) break ;;
-        completed:*) echo "Development build failed: $state" >&2; exit 1 ;;
-      esac
-    fi
-    attempt=$((attempt + 1))
-    sleep 10
-  done
-fi
+check_and_sign_bundle() {
+  test -d "$app"
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName kmd Dev' "$app/Contents/Info.plist"
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = art.apuch.ksamint.markedit.dev
+  test "$(/usr/libexec/PlistBuddy -c 'Print :KSAMINTBuildCommit' "$app/Contents/Info.plist")" = "$expected_commit"
+  lipo -archs "$app/Contents/MacOS/kmd" | grep -Fx arm64
+  codesign --force --deep --sign - --timestamp=none "$app"
+  codesign --verify --deep --strict --verbose=2 "$app"
+  ditto -c -k --keepParent "$app" "$archive"
+}
 
-test -n "$run_id" || { echo "Timed out waiting for the development build." >&2; exit 1; }
-state=$(gh run view "$run_id" --repo "$repository" --json status,conclusion \
-  --jq '.status + ":" + (.conclusion // "")')
-test "$state" = completed:success || { echo "Development build is not successful: $state" >&2; exit 1; }
+# Gate 1: build the exact commit.
+le_begin development-build "$expected_commit" ${original_args[@]+"${original_args[@]}"}
+le_set_string channel development
+le_step checkout le_checkout_exact "$expected_commit" "$source_dir"
+le_step toolchain le_toolchain_report xcodebuild node
+le_step node-version le_require_node_24
+le_step core-editor build_core_editor
+le_step xcodebuild build_app
+le_step bundle-checks-and-adhoc-sign check_and_sign_bundle
+le_artifact kmd-development.zip "$archive"
+le_pass
 
-mkdir -p "$temporary/artifact" "$temporary/unpacked"
-gh run download "$run_id" --repo "$repository" --name kmd-development --dir "$temporary/artifact"
-(cd "$temporary/artifact" && shasum -a 256 -c kmd-development.zip.sha256)
-ditto -x -k "$temporary/artifact/kmd-development.zip" "$temporary/unpacked"
+# Gate 2: install only what gate 1 accepted.
+le_require_gate development-build "$expected_commit"
+le_require_artifact development-build "$expected_commit" kmd-development.zip "$archive"
+le_begin development-install "$expected_commit" ${original_args[@]+"${original_args[@]}"}
 
 candidate="$temporary/unpacked/kmd.app"
-test -d "$candidate" || { echo "Development app bundle is missing." >&2; exit 1; }
-test "$(/usr/libexec/PlistBuddy -c 'Print :KSAMINTBuildCommit' "$candidate/Contents/Info.plist")" = "$expected_commit"
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist")" = art.apuch.ksamint.markedit.dev
-test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$candidate/Contents/Info.plist")" = "kmd Dev"
-test "$(lipo -archs "$candidate/Contents/MacOS/kmd")" = arm64
-codesign --verify --deep --strict --verbose=2 "$candidate"
+verify_candidate() {
+  mkdir -p "$temporary/unpacked"
+  ditto -x -k "$archive" "$temporary/unpacked"
+  test -d "$candidate"
+  test "$(/usr/libexec/PlistBuddy -c 'Print :KSAMINTBuildCommit' "$candidate/Contents/Info.plist")" = "$expected_commit"
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist")" = art.apuch.ksamint.markedit.dev
+  test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$candidate/Contents/Info.plist")" = "kmd Dev"
+  test "$(lipo -archs "$candidate/Contents/MacOS/kmd")" = arm64
+  codesign --verify --deep --strict --verbose=2 "$candidate"
+}
+le_step verify-candidate verify_candidate
 
 target="/Applications/kmd Dev.app"
 backup=""
-if osascript -e 'application id "art.apuch.ksamint.markedit.dev" is running' 2>/dev/null | grep -q true; then
+dev_running() {
+  osascript -e 'application id "art.apuch.ksamint.markedit.dev" is running' 2>/dev/null | grep -q true
+}
+if dev_running; then
   osascript -e 'tell application id "art.apuch.ksamint.markedit.dev" to quit' >/dev/null 2>&1 || true
   wait_count=0
-  while osascript -e 'application id "art.apuch.ksamint.markedit.dev" is running' 2>/dev/null | grep -q true; do
+  while dev_running; do
     test "$wait_count" -lt 20 || {
       echo "Installation deferred: kmd Dev still has a window or unsaved document open." >&2
       exit 3
@@ -97,7 +142,7 @@ rollback() {
     mv "$backup" "$target"
   fi
 }
-trap 'rollback; cleanup' HUP INT TERM
+trap 'rollback; exit 130' HUP INT TERM
 
 if ! ditto "$candidate" "$target"; then
   rollback
@@ -111,17 +156,21 @@ fi
 
 open "$target"
 sleep 3
-if ! osascript -e 'application id "art.apuch.ksamint.markedit.dev" is running' 2>/dev/null | grep -q true; then
+if ! dev_running; then
   echo "Installed development app failed its launch smoke test; rolling back." >&2
   rollback
   if [ -d "$target" ]; then open "$target"; fi
   exit 1
 fi
 
-trap cleanup EXIT INT TERM
+trap 'exit 130' HUP INT TERM
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$target/Contents/Info.plist")
 build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$target/Contents/Info.plist")
+le_set_string installedPath "$target"
+le_set_string installedVersion "$version ($build)"
+if [ -n "$backup" ]; then le_set_string backupPath "$backup"; fi
+le_step installed-signature codesign --verify --deep --strict --verbose=2 "$target"
+le_pass
 echo "Installed kmd Dev $version ($build), commit $expected_commit, arm64."
 echo "Formal kmd remains unchanged at /Applications/kmd.app."
 if [ -n "$backup" ]; then echo "Previous development app backup: $backup"; fi
-

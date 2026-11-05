@@ -39,7 +39,21 @@ requireText('MarkEditMac/Info.plist', '<string>ksamint-markedit</string>');
 requireText('Build.xcconfig', 'PRODUCT_BUNDLE_IDENTIFIER = art.apuch.ksamint.markedit$(BUNDLE_ID_SUFFIX)');
 requireText('MarkEditMac/Info.entitlements', '<string>group.art.apuch.ksamint-markedit</string>');
 requireText('MarkEditMac/Resources/art.apuch.ksamint-markedit.conversation-capture.plist', '<string>Contents/MacOS/kmd</string>');
-requireText('.github/workflows/release.yml', 'art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID');
+// Local Developer ID signing (GitHub runners are retired; see Scripts/lib/developer-id.sh).
+for (const profile of [
+  'art.apuch.ksamint.markedit|ksamint MarkEdit Developer ID',
+  'art.apuch.ksamint.markedit.conversation-capture-helper|ksamint Capture Helper Developer ID',
+  'art.apuch.ksamint.markedit.finder-extension|ksamint Finder Extension Developer ID',
+  'art.apuch.ksamint.markedit.preview-extension|ksamint Preview Extension Developer ID',
+  'art.apuch.ksamint.markedit.quick-actions|ksamint Quick Actions Developer ID',
+]) {
+  requireText('Scripts/lib/developer-id.sh', profile);
+}
+for (const script of ['Scripts/release-local.sh', 'Scripts/install-latest-local.sh']) {
+  requireText(script, '. "$script_dir/lib/developer-id.sh"');
+}
+requireText('Scripts/install-development-local.sh', '= art.apuch.ksamint.markedit.dev');
+requireText('Scripts/release-local.sh', 'Scripts/verify-release-app.sh');
 
 for (const scheme of fs.readdirSync(path.join(root, 'MarkEdit.xcodeproj/xcshareddata/xcschemes'))) {
   if (!scheme.startsWith('MarkEditMac') || !scheme.endsWith('.xcscheme')) continue;
